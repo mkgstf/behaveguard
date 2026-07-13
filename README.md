@@ -5,6 +5,7 @@ BehaveGuard is an integrated behavioral-authentication application with:
 - Profile enrollment with automatic saved-model retraining.
 - Detailed 1:1 behavioral verification.
 - Ranked 1:N identification across any selected profiles.
+- A quarantined verification-sample review queue with user identity feedback and admin-controlled promotion.
 - A FastAPI backend, SQLite persistence, RBF-SVM/centroid scoring, and an optional BiLSTM + TCN fusion model.
 - A Next.js admin dashboard for enrollment health, profile similarity, blacklisting, and deletion.
 
@@ -39,6 +40,8 @@ cd behaveguard-client && npm run lint && npm run build
 ```
 
 Every enrollment updates the feature scaler, profile centroids, and RBF-SVM artifact. Once there are at least two profiles with two independent sessions each and six sessions overall, enrollment also trains and saves the BiLSTM keyboard + TCN mouse fusion model.
+
+Verification and identification probes are saved separately from enrollment data. The result screen asks who produced the sample; that answer places it in the admin review queue. An administrator must assign the identity and approve the sample before it becomes a training session, then explicitly use **retrain model** to rebuild the classical and neural artifacts. Rejected, unlisted, and unreviewed samples never enter training.
 
 The supplied workbook has one session per person, so its accuracy is suitable only for development. Collect at least three sessions per profile, preferably five across multiple days, before interpreting certainty as an operational authentication result.
 

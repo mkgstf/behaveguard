@@ -8,10 +8,29 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [data, setData] = useState<AdminAnalytics | null>(null);
   const [error, setError] = useState("");
   const [comparison, setComparison] = useState<string[]>([]);
+  const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [reviewBusy, setReviewBusy] = useState("");
+  const [trainingMessage, setTrainingMessage] = useState("");
   const load = useCallback(() => api.analytics().then(setData).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
   async function blacklist(id: string, value: boolean) { await api.blacklist(id, value); await load(); }
   async function remove(id: string, label: string) { if (window.confirm(`Delete ${label} and all enrollment sessions?`)) { await api.deleteProfile(id); await load(); } }
+  async function review(id: string, action: "approve" | "reject", fallbackProfileId?: string | null) {
+    setReviewBusy(id);
+    setError("");
+    try { await api.reviewSample(id, action, assignments[id] || fallbackProfileId || undefined); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Review action failed"); }
+    finally { setReviewBusy(""); }
+  }
+  async function retrain() {
+    setReviewBusy("retrain"); setTrainingMessage(""); setError("");
+    try {
+      const trained = await api.retrain();
+      setTrainingMessage(`Model rebuilt with ${trained.classical.session_count} sessions across ${trained.classical.profile_count} profiles; ${trained.included_review_samples} approved test sample${trained.included_review_samples === 1 ? "" : "s"} marked trained${trained.neural.trained ? "; neural model updated" : "; neural model unchanged"}.`);
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Retraining failed"); }
+    finally { setReviewBusy(""); }
+  }
   if (!data) return <div className="p-10 text-muted">{error || "loading admin analytics…"}</div>;
   const bars = data.profiles.map((profile) => ({ name: profile.label, samples: profile.enrollment_count }));
   const ablationBars = data.experiment ? Object.entries(data.experiment.ablations).map(([name, metrics]) => ({ name: name.replaceAll("_", " "), accuracy: Math.round(metrics.accuracy * 100), auc: Math.round(metrics.verification_auc * 100) })) : [];
@@ -32,7 +51,24 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     <div className="flex-1 px-6 py-8 overflow-y-auto"><div className="max-w-6xl mx-auto fade-up">
       <button onClick={onBack} className="text-xs text-muted font-mono-tight mb-6 hover:text-text">← home</button>
       <div className="flex flex-wrap justify-between gap-4 items-end mb-8"><div><div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-danger mb-2">admin</div><h1 className="text-3xl font-semibold">Behavior intelligence</h1></div><div className="text-xs text-muted max-w-md">{data.model.strategy}</div></div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">{Object.entries(data.summary).map(([label, value]) => <div key={label} className="bg-surface border border-border rounded-xl p-4"><div className="text-2xl font-mono-tight">{value}</div><div className="text-xs text-muted mt-1">{label.replaceAll("_", " ")}</div></div>)}</div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">{Object.entries(data.summary).map(([label, value]) => <div key={label} className="bg-surface border border-border rounded-xl p-4"><div className="text-2xl font-mono-tight">{value}</div><div className="text-xs text-muted mt-1">{label.replaceAll("_", " ")}</div></div>)}</div>
+      <section className="bg-surface border border-border rounded-xl overflow-hidden mb-8">
+        <div className="p-5 border-b border-border flex flex-wrap items-center justify-between gap-4">
+          <div><div className="font-mono-tight text-xs uppercase tracking-widest text-amber">identification review queue</div><h2 className="text-xl font-semibold mt-2">{data.review_counts.available} captured sample{data.review_counts.available === 1 ? "" : "s"} available</h2><p className="text-xs text-muted mt-1">Assign the real person, approve the sample, then retrain when the queue is ready.</p></div>
+          <button disabled={reviewBusy === "retrain" || data.review_counts.ready_for_retrain === 0} onClick={() => void retrain()} className="bg-amber text-bg px-4 py-3 rounded-lg font-mono-tight text-xs uppercase disabled:opacity-40">{reviewBusy === "retrain" ? "retraining…" : `retrain model · ${data.review_counts.ready_for_retrain} new approved`}</button>
+        </div>
+        {trainingMessage && <div className="mx-5 mt-4 bg-cyan/10 text-cyan rounded-lg px-4 py-3 text-sm">{trainingMessage}</div>}
+        {error && <div className="mx-5 mt-4 bg-danger/10 text-danger rounded-lg px-4 py-3 text-sm">{error}</div>}
+        {data.review_queue.length === 0 ? <div className="p-8 text-sm text-muted text-center">No test samples are waiting for review.</div> : <div className="divide-y divide-border">{data.review_queue.map((sample) => {
+          const defaultProfile = sample.true_profile_id || sample.predicted_profile_id || "";
+          const best = sample.result.best;
+          return <div key={sample.id} className="p-5 grid lg:grid-cols-[1fr_220px_auto] gap-4 items-center">
+            <div><div className="flex flex-wrap items-center gap-2"><span className="font-mono-tight text-[10px] uppercase px-2 py-1 rounded bg-cyan/10 text-cyan">{sample.mode === "1to1" ? "1:1" : "1:N"}</span><span className="text-sm">Predicted <strong>{sample.predicted_label || "no profile"}</strong></span><span className="text-xs text-muted">{best.similarity}% similarity · {best.certainty}% certainty</span></div><div className="text-xs text-muted mt-2">{sample.true_label ? `User identified as ${sample.true_label}` : "Identity feedback still missing"} · {new Date(sample.created_at).toLocaleString()}</div></div>
+            <select value={assignments[sample.id] ?? defaultProfile} onChange={(event) => setAssignments((current) => ({ ...current, [sample.id]: event.target.value }))} className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm"><option value="">assign identity…</option>{data.profiles.filter((profile) => !profile.blacklisted).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select>
+            <div className="flex gap-2"><button disabled={reviewBusy === sample.id || !(assignments[sample.id] || defaultProfile)} onClick={() => void review(sample.id, "approve", defaultProfile)} className="bg-cyan/15 text-cyan px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">approve</button><button disabled={reviewBusy === sample.id} onClick={() => void review(sample.id, "reject")} className="bg-danger/15 text-danger px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">reject</button></div>
+          </div>;
+        })}</div>}
+      </section>
       <div className="grid lg:grid-cols-2 gap-5 mb-8">
         <section className="bg-surface border border-border rounded-xl p-5"><h2 className="font-mono-tight text-xs uppercase tracking-widest mb-4">enrollment depth</h2><ResponsiveContainer width="100%" height={260}><BarChart data={bars}><CartesianGrid stroke="var(--border)" vertical={false}/><XAxis dataKey="name" tick={{fill:"var(--muted)",fontSize:10}}/><YAxis tick={{fill:"var(--muted)",fontSize:10}} allowDecimals={false}/><Tooltip/><Bar dataKey="samples" fill="var(--amber)" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></section>
         <section className="bg-surface border border-border rounded-xl p-5"><h2 className="font-mono-tight text-xs uppercase tracking-widest mb-4">profile similarity matrix</h2><div className="overflow-auto"><table className="text-[10px] font-mono-tight border-separate border-spacing-1"><thead><tr><th></th>{data.similarity_labels.map((label) => <th key={label} className="px-1 text-muted max-w-14 truncate">{label}</th>)}</tr></thead><tbody>{data.similarity_matrix.map((row, i) => <tr key={data.similarity_labels[i]}><th className="pr-2 text-right text-muted">{data.similarity_labels[i]}</th>{row.map((value, j) => <td key={j} title={`${value ?? "n/a"}%`} className="w-9 h-9 text-center rounded" style={{background:value == null ? "var(--surface-2)" : `rgba(94,224,196,${Math.max(0.08,value/100)})`,color:value && value > 65 ? "var(--bg)" : "var(--text)"}}>{value == null ? "–" : Math.round(value)}</td>)}</tr>)}</tbody></table></div></section>

@@ -1,9 +1,34 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { EnrollmentResult, VerificationResult } from "@/lib/api";
+import { api } from "@/lib/api";
+import { Profile } from "@/lib/types";
 
 export default function BehaviorResult({ result, onHome }: { result: EnrollmentResult | VerificationResult; onHome: () => void }) {
   const enrollment = "training" in result;
+  const verification = enrollment ? null : result;
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [trueProfileId, setTrueProfileId] = useState(verification?.best.profile_id || "");
+  const [feedbackState, setFeedbackState] = useState<"idle" | "saving" | "saved" | "discarded">("idle");
+  const [feedbackError, setFeedbackError] = useState("");
+  useEffect(() => {
+    if (verification) void api.profiles().then((rows) => setProfiles(rows.filter((profile) => !profile.blacklisted))).catch(() => undefined);
+  }, [verification]);
+
+  async function submitIdentity(profileId: string | null) {
+    if (!verification || feedbackState !== "idle") return;
+    setFeedbackState("saving");
+    setFeedbackError("");
+    try {
+      const predictionCorrect = Boolean(profileId && verification.match && profileId === verification.best.profile_id);
+      await api.submitFeedback(verification.review_sample_id, predictionCorrect, profileId);
+      setFeedbackState(profileId ? "saved" : "discarded");
+    } catch (error) {
+      setFeedbackState("idle");
+      setFeedbackError(error instanceof Error ? error.message : "Could not save feedback");
+    }
+  }
   if (enrollment) {
     return (
       <Shell onHome={onHome} accent="amber" eyebrow="enrollment saved" title={`${result.profile.label} has been updated`}>
@@ -45,6 +70,24 @@ export default function BehaviorResult({ result, onHome }: { result: EnrollmentR
           </div>
         </div>
       )}
+      <section className="mt-7 bg-surface border border-border rounded-xl p-5">
+        <div className="font-mono-tight text-xs uppercase tracking-widest text-amber">testing feedback</div>
+        <h3 className="text-lg font-semibold mt-2">Who produced this sample?</h3>
+        <p className="text-sm text-muted mt-1">Your answer is saved for admin review. It will not affect the model until an admin approves it and retrains.</p>
+        {feedbackState === "saved" || feedbackState === "discarded" ? (
+          <div className="mt-4 rounded-lg bg-cyan/10 text-cyan px-4 py-3 text-sm">{feedbackState === "saved" ? "Identity saved in the review queue." : "Sample marked not to use for training."}</div>
+        ) : (
+          <div className="flex flex-wrap gap-3 mt-4">
+            <select value={trueProfileId} onChange={(event) => setTrueProfileId(event.target.value)} className="min-w-52 bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm">
+              {profiles.length === 0 && <option value={result.best.profile_id}>{result.best.label}</option>}
+              {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+            </select>
+            <button disabled={!trueProfileId || feedbackState === "saving"} onClick={() => void submitIdentity(trueProfileId)} className="bg-cyan text-bg rounded-lg px-4 py-2 text-xs font-mono-tight uppercase disabled:opacity-50">{feedbackState === "saving" ? "saving…" : "save identity"}</button>
+            <button disabled={feedbackState === "saving"} onClick={() => void submitIdentity(null)} className="border border-border text-muted rounded-lg px-4 py-2 text-xs font-mono-tight uppercase disabled:opacity-50">not listed / discard</button>
+          </div>
+        )}
+        {feedbackError && <p className="text-xs text-danger mt-3">{feedbackError}</p>}
+      </section>
       <p className="text-xs text-muted mt-5">Decision threshold {result.threshold}% · top-candidate margin {result.margin}% · model {result.model_version.slice(0, 19)}</p>
     </Shell>
   );

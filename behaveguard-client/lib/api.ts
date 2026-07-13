@@ -27,7 +27,10 @@ export const api = {
   enroll: (id: string, session: SessionData) => request<EnrollmentResult>(`/profiles/${id}/enroll`, { method: "POST", body: JSON.stringify({ session }) }),
   verify: (id: string, session: SessionData) => request<VerificationResult>(`/verify/${id}`, { method: "POST", body: JSON.stringify({ session }) }),
   identify: (profileIds: string[], session: SessionData) => request<VerificationResult>("/identify", { method: "POST", body: JSON.stringify({ profile_ids: profileIds, session }) }),
+  submitFeedback: (reviewId: string, predictionCorrect: boolean, trueProfileId: string | null) => request<ReviewSample>(`/review-samples/${reviewId}/feedback`, { method: "POST", body: JSON.stringify({ prediction_correct: predictionCorrect, true_profile_id: trueProfileId }) }),
   analytics: () => request<AdminAnalytics>("/admin/analytics"),
+  reviewSample: (reviewId: string, action: "approve" | "reject", profileId?: string) => request<ReviewSample>(`/admin/review-samples/${reviewId}`, { method: "PATCH", body: JSON.stringify({ action, profile_id: profileId || null }) }),
+  retrain: () => request<RetrainingResult>("/admin/retrain", { method: "POST" }),
 };
 
 export interface CandidateResult {
@@ -47,6 +50,8 @@ export interface VerificationResult {
   candidates: CandidateResult[];
   threshold: number;
   margin: number;
+  review_sample_id: string;
+  feedback_status: "awaiting_feedback" | "pending" | "approved" | "rejected";
   detail?: { category: string; similarity: number; feature_count: number }[];
 }
 
@@ -58,7 +63,7 @@ export interface EnrollmentResult {
 }
 
 export interface AdminAnalytics {
-  summary: { profiles: number; active_profiles: number; sessions: number; verifications: number };
+  summary: { profiles: number; active_profiles: number; sessions: number; verifications: number; review_samples_available: number };
   profiles: Profile[];
   similarity_labels: string[];
   similarity_matrix: (number | null)[][];
@@ -74,6 +79,33 @@ export interface AdminAnalytics {
     neural: { trained: boolean; best_validation_accuracy: number; epochs: number };
   };
   profile_cards: ProfileCharacterCard[];
+  review_counts: Record<"awaiting_feedback" | "pending" | "approved" | "rejected" | "available" | "ready_for_retrain", number>;
+  review_queue: ReviewSample[];
+}
+
+export interface ReviewSample {
+  id: string;
+  mode: "1to1" | "1toN";
+  claimed_profile_id: string | null;
+  claimed_label: string | null;
+  predicted_profile_id: string | null;
+  predicted_label: string | null;
+  true_profile_id: string | null;
+  true_label: string | null;
+  candidate_ids: string[];
+  feedback_correct: boolean | null;
+  status: "awaiting_feedback" | "pending" | "approved" | "rejected";
+  promoted_session_id: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  trained_at: string | null;
+  result: { match: boolean; best: CandidateResult; threshold: number; margin: number };
+}
+
+export interface RetrainingResult {
+  classical: { version?: string; session_count: number; profile_count: number; svm_trained: boolean };
+  neural: { trained: boolean; reason?: string; loss?: number; epochs?: number };
+  included_review_samples: number;
 }
 
 export interface ProfileCharacterCard {

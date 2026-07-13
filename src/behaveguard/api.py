@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .database import (
-    add_session, create_profile, delete_profile, get_profile, init_db, list_profiles,
-    log_verification, profile_sessions, set_blacklist, verification_count,
+    add_session, create_profile, create_review_sample, delete_profile, get_profile,
+    init_db, list_profiles, list_review_samples, log_verification, profile_sessions,
+    mark_approved_samples_trained, promote_review_sample, reject_review_sample, review_sample_counts, set_blacklist,
+    submit_review_feedback, verification_count,
 )
 from .features import extract_features
 from .modeling import compare_detail, model_status, retrain_model, score_session
@@ -33,6 +35,16 @@ class SessionRequest(BaseModel):
 
 class IdentifyRequest(SessionRequest):
     profile_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class FeedbackRequest(BaseModel):
+    prediction_correct: bool
+    true_profile_id: str | None = None
+
+
+class ReviewAction(BaseModel):
+    action: Literal["approve", "reject"]
+    profile_id: str | None = None
 
 
 app = FastAPI(title="BehaveGuard API", version="1.0.0")
@@ -111,8 +123,13 @@ def verify(profile_id: str, request: SessionRequest) -> dict:
             raise HTTPException(403, "Profile is blacklisted")
         result = score_session(request.session, [profile_id])
         result["best"]["label"] = profile["label"]
-        result["detail"] = compare_detail(profile_id, result.pop("features"))
-        log_verification("1to1", profile_id, [profile_id], result)
+        features = result.pop("features")
+        result["detail"] = compare_detail(profile_id, features)
+        event_id = log_verification("1to1", profile_id, [profile_id], result)
+        result["review_sample_id"] = create_review_sample(
+            event_id, "1to1", profile_id, profile_id, [profile_id], request.session, features, result,
+        )
+        result["feedback_status"] = "awaiting_feedback"
         return result
     except KeyError as error:
         raise HTTPException(404, "Profile not found") from error
@@ -138,12 +155,26 @@ def identify(request: IdentifyRequest) -> dict:
         result = score_session(request.session, valid)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
-    result.pop("features", None)
+    features = result.pop("features")
     for candidate in result["candidates"]:
         candidate["label"] = labels[candidate["profile_id"]]
     result["best"] = result["candidates"][0]
-    log_verification("1toN", None, valid, result)
+    event_id = log_verification("1toN", None, valid, result)
+    result["review_sample_id"] = create_review_sample(
+        event_id, "1toN", None, result["best"]["profile_id"], valid, request.session, features, result,
+    )
+    result["feedback_status"] = "awaiting_feedback"
     return result
+
+
+@app.post("/api/v1/review-samples/{review_id}/feedback")
+def review_feedback(review_id: str, request: FeedbackRequest) -> dict:
+    try:
+        return submit_review_feedback(review_id, request.prediction_correct, request.true_profile_id)
+    except KeyError as error:
+        raise HTTPException(404, "Review sample or profile not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 @app.get("/api/v1/admin/analytics")
@@ -171,10 +202,31 @@ def admin_analytics() -> dict:
             "ablations": report["ablations"], "neural": report["neural"],
         }
     return {
-        "summary": {"profiles": len(profiles), "active_profiles": len(active), "sessions": sum(p["enrollment_count"] for p in profiles), "verifications": verification_count()},
+        "summary": {"profiles": len(profiles), "active_profiles": len(active), "sessions": sum(p["enrollment_count"] for p in profiles), "verifications": verification_count(), "review_samples_available": review_sample_counts()["available"]},
         "profiles": profiles, "similarity_labels": [p["label"] for p in active], "similarity_matrix": similarity,
         "model": status, "experiment": experiment, "profile_cards": build_character_cards(profiles),
+        "review_counts": review_sample_counts(), "review_queue": list_review_samples(),
     }
+
+
+@app.patch("/api/v1/admin/review-samples/{review_id}")
+def review_sample(review_id: str, request: ReviewAction) -> dict:
+    try:
+        if request.action == "approve":
+            return promote_review_sample(review_id, request.profile_id)
+        return reject_review_sample(review_id)
+    except KeyError as error:
+        raise HTTPException(404, "Review sample or profile not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/v1/admin/retrain")
+def retrain() -> dict:
+    classical = retrain_model()
+    neural = train_neural(epochs=20)
+    included_review_samples = mark_approved_samples_trained()
+    return {"classical": classical, "neural": neural, "included_review_samples": included_review_samples}
 
 
 @app.get("/api/v1/admin/profiles/{profile_id}/stats")
