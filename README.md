@@ -27,7 +27,19 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. The frontend calls `http://127.0.0.1:8000/api/v1` by default. Set `NEXT_PUBLIC_API_URL` to change the API location.
+Open `http://localhost:3000`. The frontend uses the same-origin `/api/v1` path, which Next.js proxies to `http://127.0.0.1:8000` by default. Set server-side `BACKEND_URL` to change the proxy destination, or `NEXT_PUBLIC_API_URL` only when intentionally serving the API from a separate public origin.
+
+## Temporary laptop hosting with Cloudflare Tunnel
+
+Run the backend and production frontend locally, then point one Cloudflare Tunnel hostname at the frontend. The same-origin rewrite keeps the backend private:
+
+```bash
+uv run behaveguard serve
+cd behaveguard-client && npm run build && npm run start -- --hostname 127.0.0.1 --port 3000
+cloudflared tunnel run behaveguard
+```
+
+The local Cloudflare configuration maps `behave.amehta.space` to `http://127.0.0.1:3000`. The site is available only while the laptop is awake, connected, and all three processes are running.
 
 ## Training and tests
 
