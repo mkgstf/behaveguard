@@ -56,7 +56,25 @@ Testing every full session against all 9 identities ranked the correct profile f
 - `behavior_neural.pt`: experimental BiLSTM + TCN window-trained checkpoint.
 - `tuned_config.json`: selected SVM parameters and conservative development threshold.
 - `experiment_report.json`: complete metrics, confusion matrices, ablations, and pairwise profile similarities.
+- `personal_neural.pt`: Saruman-specific BiLSTM + TCN binary verification artifact.
+- `personal_neural_report.json`: session-disjoint personal-verifier folds, scores, thresholds, and metrics.
+
+## Saruman personal neural verifier
+
+After merging the confirmed `elrond` and `akshit` aliases, `saruman` has four independent enrollment sessions. A target-specific verifier was evaluated with four outer folds. Each fold held out one complete Saruman parent session and two impostor identities; no held raw event or derived window entered that fold's training data.
+
+| Metric | Result |
+|---|---:|
+| Balanced accuracy | 87.5% |
+| Genuine accepted | 3/4 (75%) |
+| False rejection | 1/4 (25%) |
+| Impostors rejected | 8/8 (100%) |
+| False acceptance | 0/8 (0%) |
+| Pooled ROC-AUC | 1.000 |
+| Median deployment threshold | 50.62% |
+
+The four held-out genuine scores were 81.11%, 79.70%, 80.51%, and 23.84%. Impostor scores ranged from 18.73% to 23.10%. Although pooled ranking separates these twelve trials, fold-specific training thresholds rejected the fourth genuine session. The personal neural score therefore remains advisory and does not control authentication decisions. Four genuine and eight impostor trials are far too few for a precise FAR/FRR estimate.
 
 ## Next data requirement
 
-Collect at least three sessions per identity on separate days, preferably five. `saruman` currently has two sessions; every other identity still needs repeated data. The next evaluation must split by real session and should include identity-disjoint testing, calibration confidence intervals, and TAR at fixed FAR targets before any production claim.
+Collect at least three sessions per identity on separate days, preferably five. `saruman` currently has four sessions; every other identity still needs repeated data. For the personal verifier, collect at least six to ten Saruman sessions across different days/devices and substantially more fresh impostor attempts. The next evaluation must split by real session and should include identity-disjoint testing, calibration confidence intervals, and TAR at fixed FAR targets before any production claim.

@@ -9,6 +9,7 @@ from .importer import import_xlsx
 from .modeling import model_status, retrain_model
 from .training import train_neural
 from .experiments import run_experiments
+from .personal_verifier import train_personal_verifier
 
 app = typer.Typer(help="BehaveGuard administration and ML pipeline")
 
@@ -48,6 +49,17 @@ def experiment(windows: int = 5, neural_epochs: int = 25) -> None:
         "validity": report["validity"], "best_model": report["best_model"],
         "best_metrics": report["best_metrics"], "ablations": report["ablations"],
         "neural": report["neural"],
+    })
+
+
+@app.command("personal-neural")
+def personal_neural(label: str, epochs: int = 25, windows: int = 4) -> None:
+    """Train and session-disjoint evaluate a personal neural verifier for LABEL."""
+    init_db()
+    report = train_personal_verifier(label, epochs=epochs, window_count=windows)
+    typer.echo({
+        "target": report["target_label"], "validity": report["validity"],
+        "metrics": report["metrics"], "threshold": report["operating_threshold"],
     })
 
 

@@ -17,7 +17,7 @@ from .database import (
 from .features import extract_features
 from .modeling import compare_detail, model_status, retrain_model, score_session
 from .training import train_neural
-from .config import ARTIFACT_DIR
+from .config import ARTIFACT_DIR, PERSONAL_NEURAL_REPORT_PATH
 from .profile_analytics import build_character_cards, compare_probe_to_profile
 
 
@@ -201,6 +201,7 @@ def admin_analytics() -> dict:
             "best_svm": report["best_svm"], "tuned_svm": report["tuned_svm"],
             "ablations": report["ablations"], "neural": report["neural"],
         }
+    personal_neural = json.loads(PERSONAL_NEURAL_REPORT_PATH.read_text()) if PERSONAL_NEURAL_REPORT_PATH.exists() else None
     review_counts = review_sample_counts()
     review_queue = list_review_samples()
     for sample in review_queue:
@@ -209,7 +210,8 @@ def admin_analytics() -> dict:
     return {
         "summary": {"profiles": len(profiles), "active_profiles": len(active), "sessions": sum(p["enrollment_count"] for p in profiles), "verifications": verification_count(), "review_samples_available": review_counts["available"]},
         "profiles": profiles, "similarity_labels": [p["label"] for p in active], "similarity_matrix": similarity,
-        "model": status, "experiment": experiment, "profile_cards": build_character_cards(profiles),
+        "model": status, "experiment": experiment, "personal_neural": personal_neural,
+        "profile_cards": build_character_cards(profiles),
         "review_counts": review_counts, "review_queue": review_queue,
     }
 

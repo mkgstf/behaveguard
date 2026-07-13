@@ -41,6 +41,9 @@ export interface CandidateResult {
   certainty: number;
   svm_certainty: number;
   neural_certainty: number | null;
+  personal_neural_certainty: number | null;
+  personal_neural_threshold: number | null;
+  personal_neural_match: boolean | null;
   enrollment_count: number;
 }
 
@@ -79,9 +82,45 @@ export interface AdminAnalytics {
     ablations: Record<string, { accuracy: number; verification_auc: number; eer: number }>;
     neural: { trained: boolean; best_validation_accuracy: number; epochs: number };
   };
+  personal_neural: PersonalNeuralReport | null;
   profile_cards: ProfileCharacterCard[];
   review_counts: Record<"awaiting_feedback" | "pending" | "approved" | "rejected" | "available" | "ready_for_retrain", number>;
   review_queue: ReviewSample[];
+}
+
+export interface PersonalNeuralReport {
+  created_at: string;
+  validity: string;
+  warning: string;
+  target_profile_id: string;
+  target_label: string;
+  genuine_sessions: number;
+  impostor_identities: number;
+  window_count: number;
+  epochs: number;
+  operating_threshold: number;
+  metrics: {
+    roc_auc: number;
+    eer: number;
+    balanced_accuracy: number;
+    genuine_acceptance_rate: number;
+    false_rejection_rate: number;
+    false_acceptance_rate: number;
+    genuine_trials: number;
+    impostor_trials: number;
+    false_rejections: number;
+    false_acceptances: number;
+  };
+  folds: {
+    fold: number;
+    threshold: number;
+    genuine_score: number;
+    genuine_accepted: boolean;
+    impostors: { profile_id: string; label: string; score: number; accepted: boolean }[];
+    final_loss: number;
+  }[];
+  genuine_scores: number[];
+  impostor_scores: number[];
 }
 
 export interface ReviewSample {

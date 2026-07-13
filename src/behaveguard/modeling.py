@@ -16,6 +16,7 @@ from .config import ARTIFACT_DIR, MODEL_PATH, NEURAL_PATH, ensure_directories
 from .database import all_training_rows, profile_sessions
 from .features import detailed_comparison, extract_features, feature_vector
 from .neural import BehavioralSequenceNet, session_sequences
+from .personal_verifier import score_personal_verifier
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -122,10 +123,14 @@ def score_session(session: dict[str, Any], candidate_ids: list[str]) -> dict[str
         cosine = (_cosine(vector, profile["centroid"]) + 1) / 2
         svm_probability = svm_probabilities.get(profile_id, cosine)
         neural_probability = neural_probabilities.get(profile_id)
+        personal_neural = score_personal_verifier(session, profile_id)
         blended = cosine * 0.8 + svm_probability * 0.2 if neural_probability is None else cosine * 0.7 + svm_probability * 0.2 + neural_probability * 0.1
         similarities.append({
             "profile_id": profile_id, "score": blended, "svm_certainty": round(svm_probability * 100, 1),
             "neural_certainty": round(neural_probability * 100, 1) if neural_probability is not None else None,
+            "personal_neural_certainty": personal_neural["certainty"] if personal_neural else None,
+            "personal_neural_threshold": personal_neural["threshold"] if personal_neural else None,
+            "personal_neural_match": personal_neural["match"] if personal_neural else None,
             "enrollment_count": profile["count"],
         })
     if not similarities:

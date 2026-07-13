@@ -45,10 +45,11 @@ export default function BehaviorResult({ result, onHome }: { result: EnrollmentR
   }
   return (
     <Shell onHome={onHome} accent="cyan" eyebrow={result.candidates.length === 1 ? "1:1 verification" : "1:N identification"} title={result.match ? `${result.best.label} is the closest verified match` : "No confident match"}>
-      <div className="grid sm:grid-cols-4 gap-3 mb-6">
+      <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
         <Stat label="similarity" value={`${result.best.similarity}%`} />
         <Stat label="certainty" value={`${result.best.certainty}%`} />
         <Stat label="neural vote" value={result.best.neural_certainty == null ? "n/a" : `${result.best.neural_certainty}%`} />
+        <Stat label="personal neural" value={result.best.personal_neural_certainty == null ? "n/a" : `${result.best.personal_neural_certainty}%`} />
         <Stat label="decision" value={result.match ? "match" : "no match"} />
       </div>
       {result.detail && (
@@ -64,7 +65,7 @@ export default function BehaviorResult({ result, onHome }: { result: EnrollmentR
             {result.candidates.map((row, index) => (
               <div key={row.profile_id} className="bg-surface border border-border rounded-lg p-3 flex items-center gap-4">
                 <span className="font-mono-tight text-muted">#{index + 1}</span><span className="flex-1">{row.label}</span>
-                <span className="font-mono-tight text-sm text-cyan">{row.similarity}%</span><span className="font-mono-tight text-xs text-muted">SVM {row.svm_certainty}% · neural {row.neural_certainty == null ? "n/a" : `${row.neural_certainty}%`}</span>
+                <span className="font-mono-tight text-sm text-cyan">{row.similarity}%</span><span className="font-mono-tight text-xs text-muted">SVM {row.svm_certainty}% · neural {row.neural_certainty == null ? "n/a" : `${row.neural_certainty}%`} · personal {row.personal_neural_certainty == null ? "n/a" : `${row.personal_neural_certainty}%`}</span>
               </div>
             ))}
           </div>

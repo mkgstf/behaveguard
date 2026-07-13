@@ -46,6 +46,7 @@ The local Cloudflare configuration maps `behave.amehta.space` to `http://127.0.0
 ```bash
 uv run behaveguard train
 uv run behaveguard experiment --windows 5 --neural-epochs 25
+uv run behaveguard personal-neural saruman --epochs 25 --windows 4
 uv run behaveguard status
 uv run pytest
 cd behaveguard-client && npm run lint && npm run build
@@ -60,6 +61,8 @@ Before approval, the admin queue compares each identification run with the selec
 The supplied workbook has one session per person, so its accuracy is suitable only for development. Collect at least three sessions per profile, preferably five across multiple days, before interpreting certainty as an operational authentication result.
 
 The experiment command creates `artifacts/experiment_report.json`, tunes classical models and the RBF-SVM, runs keyboard/mouse ablations and profile comparisons, and saves an explicitly experimental BiLSTM + TCN artifact.
+
+The `personal-neural` command trains a target-specific binary verifier when one identity has at least three independent sessions and at least four distinct impostor identities are available. Its outer evaluation holds out one complete genuine parent session and a disjoint subset of impostor identities per fold. The saved personal vote is advisory and does not override the primary SVM/centroid decision.
 
 ## Data and privacy
 

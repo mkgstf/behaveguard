@@ -9,6 +9,8 @@ ARTIFACT_DIR = Path(os.getenv("BEHAVEGUARD_ARTIFACT_DIR", "artifacts")).resolve(
 DB_PATH = DATA_DIR / "behaveguard.db"
 MODEL_PATH = ARTIFACT_DIR / "behavior_model.joblib"
 NEURAL_PATH = ARTIFACT_DIR / "behavior_neural.pt"
+PERSONAL_NEURAL_PATH = ARTIFACT_DIR / "personal_neural.pt"
+PERSONAL_NEURAL_REPORT_PATH = ARTIFACT_DIR / "personal_neural_report.json"
 
 
 def ensure_directories() -> None:
