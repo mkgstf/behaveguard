@@ -128,13 +128,41 @@ def get_profile_by_label(label: str) -> dict[str, Any]:
     return get_profile(str(row["id"]))
 
 
+def _replace_profile_reference(value: Any, source_id: str, target_id: str) -> Any:
+    if isinstance(value, dict):
+        return {key: _replace_profile_reference(item, source_id, target_id) for key, item in value.items()}
+    if isinstance(value, list):
+        replaced = [_replace_profile_reference(item, source_id, target_id) for item in value]
+        return list(dict.fromkeys(replaced)) if all(isinstance(item, str) for item in replaced) else replaced
+    return target_id if value == source_id else value
+
+
 def merge_profiles(source_label: str, target_label: str) -> dict[str, Any]:
     source = get_profile_by_label(source_label)
     target = get_profile_by_label(target_label)
     if source["id"] == target["id"]:
         return target
     with connection() as conn:
+        review_rows = conn.execute("SELECT id,candidate_ids,result FROM review_samples").fetchall()
+        for row in review_rows:
+            candidates = _replace_profile_reference(json.loads(row["candidate_ids"]), source["id"], target["id"])
+            result = _replace_profile_reference(json.loads(row["result"]), source["id"], target["id"])
+            conn.execute(
+                "UPDATE review_samples SET candidate_ids=?,result=? WHERE id=?",
+                (json.dumps(candidates), json.dumps(result), row["id"]),
+            )
+        event_rows = conn.execute("SELECT id,candidates,result FROM verification_events").fetchall()
+        for row in event_rows:
+            candidates = _replace_profile_reference(json.loads(row["candidates"]), source["id"], target["id"])
+            result = _replace_profile_reference(json.loads(row["result"]), source["id"], target["id"])
+            conn.execute(
+                "UPDATE verification_events SET candidates=?,result=? WHERE id=?",
+                (json.dumps(candidates), json.dumps(result), row["id"]),
+            )
         conn.execute("UPDATE sessions SET profile_id=? WHERE profile_id=?", (target["id"], source["id"]))
+        conn.execute("UPDATE verification_events SET claimed_profile_id=? WHERE claimed_profile_id=?", (target["id"], source["id"]))
+        for column in ("claimed_profile_id", "predicted_profile_id", "true_profile_id"):
+            conn.execute(f"UPDATE review_samples SET {column}=? WHERE {column}=?", (target["id"], source["id"]))
         conn.execute("DELETE FROM profiles WHERE id=?", (source["id"],))
         conn.execute("UPDATE profiles SET updated_at=? WHERE id=?", (utcnow(), target["id"]))
     return get_profile(target["id"])

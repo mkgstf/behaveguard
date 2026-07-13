@@ -59,3 +59,24 @@ def test_unlisted_identity_is_rejected(tmp_path, monkeypatch):
     rejected = database.submit_review_feedback(review_id, False, None)
     assert rejected["status"] == "rejected"
     assert database.review_sample_counts()["available"] == 0
+
+
+def test_profile_merge_preserves_review_references(tmp_path, monkeypatch):
+    setup_database(tmp_path, monkeypatch)
+    source = database.create_profile("alias")
+    target = database.create_profile("canonical")
+    result, session = capture(source["id"])
+    database.add_session(source["id"], session, {"key_dwell_mean": 72.0})
+    event_id = database.log_verification("1to1", source["id"], [source["id"]], result)
+    review_id = database.create_review_sample(
+        event_id, "1to1", source["id"], source["id"], [source["id"]], session, {}, result,
+    )
+
+    merged = database.merge_profiles("alias", "canonical")
+    review = database.get_review_sample(review_id)
+
+    assert merged["enrollment_count"] == 1
+    assert review["claimed_profile_id"] == target["id"]
+    assert review["predicted_profile_id"] == target["id"]
+    assert review["candidate_ids"] == [target["id"]]
+    assert review["result"]["best"]["profile_id"] == target["id"]

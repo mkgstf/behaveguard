@@ -10,7 +10,7 @@ from .database import add_session, create_profile, list_profiles, profile_sessio
 from .features import extract_features
 
 
-PROFILE_ALIASES = {"elrond": "saruman"}
+PROFILE_ALIASES = {"elrond": "saruman", "akshit": "saruman"}
 
 
 def _records(frame: pd.DataFrame) -> list[dict[str, Any]]:

@@ -17,7 +17,7 @@ uv run behaveguard import-xlsx Behaveguard-client.xlsx
 uv run behaveguard serve --reload
 ```
 
-The workbook import is idempotent. In the development workbook, `elrond` is a legacy alias for `saruman`; both rows are deliberately canonicalized to one identity. The current sample therefore initializes 9 profiles from 10 sessions.
+The workbook import is idempotent. `elrond` and `akshit` are known aliases for the canonical `saruman` identity; those labels are deliberately canonicalized rather than trained as separate people. The original development workbook therefore initializes 9 profiles from 10 sessions.
 
 ## Start the frontend
 
