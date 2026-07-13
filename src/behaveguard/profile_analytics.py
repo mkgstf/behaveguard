@@ -5,6 +5,7 @@ from statistics import mean, pstdev
 from typing import Any
 
 from .database import profile_sessions
+from .features import detailed_comparison
 
 
 def _numbers(values) -> list[float]:
@@ -145,3 +146,53 @@ def build_character_cards(profiles: list[dict[str, Any]]) -> list[dict[str, Any]
         card["rank"] = _rank(overall)
         card["missing_ratings"] = missing
     return cards
+
+
+def compare_probe_to_profile(profile_id: str, payload: dict[str, Any], features: dict[str, float]) -> dict[str, Any]:
+    """Build a browser-safe comparison without exposing event streams or feature vectors."""
+    sessions = profile_sessions(profile_id)
+    categories = detailed_comparison(features, [session["features"] for session in sessions])
+    feature_total = sum(int(row["feature_count"]) for row in categories)
+    overall = (
+        sum(float(row["similarity"]) * int(row["feature_count"]) for row in categories) / feature_total
+        if feature_total else 0.0
+    )
+    probe = session_behavior_metrics(payload)
+    histories = [session_behavior_metrics(session["payload"]) for session in sessions]
+    definitions = [
+        ("Typing speed", "wpm", "WPM", 1.0),
+        ("Key dwell", "dwell_ms", "ms", 1.0),
+        ("Key flight", "flight_ms", "ms", 1.0),
+        ("Inter-key interval", "iki_ms", "ms", 1.0),
+        ("Backspace rate", "backspace_rate", "%", 100.0),
+        ("Mouse speed", "mouse_speed_pxs", "px/s", 1.0),
+        ("Click error", "click_error_px", "px", 1.0),
+        ("Target travel", "target_time_ms", "ms", 1.0),
+        ("Tracking error", "tracking_error_px", "px", 1.0),
+        ("Tremor", "tremor_px", "px", 1.0),
+        ("Drag duration", "drag_duration_ms", "ms", 1.0),
+        ("Drag success", "drag_success_rate", "%", 100.0),
+    ]
+    metrics = []
+    for label, key, unit, multiplier in definitions:
+        probe_value = probe.get(key)
+        profile_value = _mean(history.get(key) for history in histories)
+        if probe_value is None and profile_value is None:
+            continue
+        delta = None
+        if probe_value is not None and profile_value not in (None, 0):
+            delta = (float(probe_value) - float(profile_value)) / abs(float(profile_value)) * 100
+        metrics.append({
+            "label": label,
+            "probe": round(float(probe_value) * multiplier, 2) if probe_value is not None else None,
+            "profile": round(float(profile_value) * multiplier, 2) if profile_value is not None else None,
+            "delta_percent": round(delta, 1) if delta is not None else None,
+            "unit": unit,
+        })
+    return {
+        "profile_id": profile_id,
+        "overall_coincidence": round(overall, 1),
+        "categories": categories,
+        "metrics": metrics,
+        "enrollment_sessions": len(sessions),
+    }

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from .database import (
     add_session, create_profile, create_review_sample, delete_profile, get_profile,
-    init_db, list_profiles, list_review_samples, log_verification, profile_sessions,
+    get_review_sample_material, init_db, list_profiles, list_review_samples, log_verification, profile_sessions,
     mark_approved_samples_trained, promote_review_sample, reject_review_sample, review_sample_counts, set_blacklist,
     submit_review_feedback, verification_count,
 )
@@ -18,7 +18,7 @@ from .features import extract_features
 from .modeling import compare_detail, model_status, retrain_model, score_session
 from .training import train_neural
 from .config import ARTIFACT_DIR
-from .profile_analytics import build_character_cards
+from .profile_analytics import build_character_cards, compare_probe_to_profile
 
 
 class ProfileCreate(BaseModel):
@@ -201,12 +201,33 @@ def admin_analytics() -> dict:
             "best_svm": report["best_svm"], "tuned_svm": report["tuned_svm"],
             "ablations": report["ablations"], "neural": report["neural"],
         }
+    review_counts = review_sample_counts()
+    review_queue = list_review_samples()
+    for sample in review_queue:
+        target = sample["true_profile_id"] or sample["predicted_profile_id"]
+        sample["comparison"] = build_review_comparison(sample["id"], target) if target else None
     return {
-        "summary": {"profiles": len(profiles), "active_profiles": len(active), "sessions": sum(p["enrollment_count"] for p in profiles), "verifications": verification_count(), "review_samples_available": review_sample_counts()["available"]},
+        "summary": {"profiles": len(profiles), "active_profiles": len(active), "sessions": sum(p["enrollment_count"] for p in profiles), "verifications": verification_count(), "review_samples_available": review_counts["available"]},
         "profiles": profiles, "similarity_labels": [p["label"] for p in active], "similarity_matrix": similarity,
         "model": status, "experiment": experiment, "profile_cards": build_character_cards(profiles),
-        "review_counts": review_sample_counts(), "review_queue": list_review_samples(),
+        "review_counts": review_counts, "review_queue": review_queue,
     }
+
+
+def build_review_comparison(review_id: str, profile_id: str) -> dict:
+    profile = get_profile(profile_id)
+    material = get_review_sample_material(review_id)
+    comparison = compare_probe_to_profile(profile_id, material["payload"], material["features"])
+    comparison["profile_label"] = profile["label"]
+    return comparison
+
+
+@app.get("/api/v1/admin/review-samples/{review_id}/comparison")
+def review_comparison(review_id: str, profile_id: str = Query(...)) -> dict:
+    try:
+        return build_review_comparison(review_id, profile_id)
+    except KeyError as error:
+        raise HTTPException(404, "Review sample or profile not found") from error
 
 
 @app.patch("/api/v1/admin/review-samples/{review_id}")

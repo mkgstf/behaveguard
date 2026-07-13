@@ -29,6 +29,7 @@ export const api = {
   identify: (profileIds: string[], session: SessionData) => request<VerificationResult>("/identify", { method: "POST", body: JSON.stringify({ profile_ids: profileIds, session }) }),
   submitFeedback: (reviewId: string, predictionCorrect: boolean, trueProfileId: string | null) => request<ReviewSample>(`/review-samples/${reviewId}/feedback`, { method: "POST", body: JSON.stringify({ prediction_correct: predictionCorrect, true_profile_id: trueProfileId }) }),
   analytics: () => request<AdminAnalytics>("/admin/analytics"),
+  reviewComparison: (reviewId: string, profileId: string) => request<ReviewComparison>(`/admin/review-samples/${reviewId}/comparison?profile_id=${encodeURIComponent(profileId)}`),
   reviewSample: (reviewId: string, action: "approve" | "reject", profileId?: string) => request<ReviewSample>(`/admin/review-samples/${reviewId}`, { method: "PATCH", body: JSON.stringify({ action, profile_id: profileId || null }) }),
   retrain: () => request<RetrainingResult>("/admin/retrain", { method: "POST" }),
 };
@@ -100,6 +101,16 @@ export interface ReviewSample {
   reviewed_at: string | null;
   trained_at: string | null;
   result: { match: boolean; best: CandidateResult; threshold: number; margin: number };
+  comparison: ReviewComparison | null;
+}
+
+export interface ReviewComparison {
+  profile_id: string;
+  profile_label: string;
+  overall_coincidence: number;
+  enrollment_sessions: number;
+  categories: { category: string; similarity: number; feature_count: number }[];
+  metrics: { label: string; probe: number | null; profile: number | null; delta_percent: number | null; unit: string }[];
 }
 
 export interface RetrainingResult {

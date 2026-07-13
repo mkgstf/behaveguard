@@ -2,7 +2,7 @@
 
 ## Implementation status — July 2026
 
-The working demo now includes enrollment, 1:1 verification, 1:N identification, profile administration, character-style behavioral comparisons, classical/deep training, and saved model artifacts. Verification probes are retained in a quarantine-backed review workflow: the tester can identify the true person or discard the sample, an administrator can reassign and approve it, and only an explicit retraining action incorporates newly approved samples into the active model. Each approved sample is marked after inclusion so the dashboard reports only new data awaiting retraining.
+The working demo now includes enrollment, 1:1 verification, 1:N identification, profile administration, character-style behavioral comparisons, classical/deep training, and saved model artifacts. Verification probes are retained in a quarantine-backed review workflow: the tester can identify the true person or discard the sample, an administrator can reassign and approve it, and only an explicit retraining action incorporates newly approved samples into the active model. Each approved sample is marked after inclusion so the dashboard reports only new data awaiting retraining. The review queue also compares every identification run with any selected trained profile using overall/category coincidence and side-by-side behavioral measurements, while keeping raw event streams server-side.
 
 ## 1. Goal and success criteria
 

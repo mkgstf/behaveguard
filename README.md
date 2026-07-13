@@ -43,6 +43,8 @@ Every enrollment updates the feature scaler, profile centroids, and RBF-SVM arti
 
 Verification and identification probes are saved separately from enrollment data. The result screen asks who produced the sample; that answer places it in the admin review queue. An administrator must assign the identity and approve the sample before it becomes a training session, then explicitly use **retrain model** to rebuild the classical and neural artifacts. Rejected, unlisted, and unreviewed samples never enter training.
 
+Before approval, the admin queue compares each identification run with the selected trained profile. It shows the original model similarity/certainty, weighted feature coincidence, keyboard and mouse category overlap, and side-by-side behavioral measurements such as WPM, dwell/flight timing, mouse speed, click error, tracking error, tremor, and drag performance. Selecting a different profile recalculates these statistics server-side without exposing the raw event stream to the browser.
+
 The supplied workbook has one session per person, so its accuracy is suitable only for development. Collect at least three sessions per profile, preferably five across multiple days, before interpreting certainty as an operational authentication result.
 
 The experiment command creates `artifacts/experiment_report.json`, tunes classical models and the RBF-SVM, runs keyboard/mouse ablations and profile comparisons, and saves an explicitly experimental BiLSTM + TCN artifact.

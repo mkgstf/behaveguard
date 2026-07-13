@@ -257,6 +257,15 @@ def get_review_sample(review_id: str) -> dict[str, Any]:
     return _review_row(row)
 
 
+def get_review_sample_material(review_id: str) -> dict[str, Any]:
+    """Return sensitive probe material for server-side comparison only."""
+    with connection() as conn:
+        row = conn.execute("SELECT payload,features FROM review_samples WHERE id=?", (review_id,)).fetchone()
+    if row is None:
+        raise KeyError(review_id)
+    return {"payload": json.loads(row["payload"]), "features": json.loads(row["features"])}
+
+
 def list_review_samples(statuses: tuple[str, ...] = ("awaiting_feedback", "pending")) -> list[dict[str, Any]]:
     placeholders = ",".join("?" for _ in statuses)
     with connection() as conn:

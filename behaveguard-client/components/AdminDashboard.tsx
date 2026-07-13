@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { AdminAnalytics, api } from "@/lib/api";
+import { AdminAnalytics, api, ReviewComparison } from "@/lib/api";
 
 export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [data, setData] = useState<AdminAnalytics | null>(null);
   const [error, setError] = useState("");
   const [comparison, setComparison] = useState<string[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [reviewComparisons, setReviewComparisons] = useState<Record<string, ReviewComparison>>({});
+  const [comparisonBusy, setComparisonBusy] = useState("");
   const [reviewBusy, setReviewBusy] = useState("");
   const [trainingMessage, setTrainingMessage] = useState("");
   const load = useCallback(() => api.analytics().then(setData).catch((e) => setError(e.message)), []);
@@ -30,6 +32,16 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Retraining failed"); }
     finally { setReviewBusy(""); }
+  }
+  async function selectReviewProfile(reviewId: string, profileId: string) {
+    setAssignments((current) => ({ ...current, [reviewId]: profileId }));
+    if (!profileId) return;
+    setComparisonBusy(reviewId); setError("");
+    try {
+      const comparisonResult = await api.reviewComparison(reviewId, profileId);
+      setReviewComparisons((current) => ({ ...current, [reviewId]: comparisonResult }));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Comparison failed"); }
+    finally { setComparisonBusy(""); }
   }
   if (!data) return <div className="p-10 text-muted">{error || "loading admin analytics…"}</div>;
   const bars = data.profiles.map((profile) => ({ name: profile.label, samples: profile.enrollment_count }));
@@ -62,10 +74,18 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
         {data.review_queue.length === 0 ? <div className="p-8 text-sm text-muted text-center">No test samples are waiting for review.</div> : <div className="divide-y divide-border">{data.review_queue.map((sample) => {
           const defaultProfile = sample.true_profile_id || sample.predicted_profile_id || "";
           const best = sample.result.best;
-          return <div key={sample.id} className="p-5 grid lg:grid-cols-[1fr_220px_auto] gap-4 items-center">
-            <div><div className="flex flex-wrap items-center gap-2"><span className="font-mono-tight text-[10px] uppercase px-2 py-1 rounded bg-cyan/10 text-cyan">{sample.mode === "1to1" ? "1:1" : "1:N"}</span><span className="text-sm">Predicted <strong>{sample.predicted_label || "no profile"}</strong></span><span className="text-xs text-muted">{best.similarity}% similarity · {best.certainty}% certainty</span></div><div className="text-xs text-muted mt-2">{sample.true_label ? `User identified as ${sample.true_label}` : "Identity feedback still missing"} · {new Date(sample.created_at).toLocaleString()}</div></div>
-            <select value={assignments[sample.id] ?? defaultProfile} onChange={(event) => setAssignments((current) => ({ ...current, [sample.id]: event.target.value }))} className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm"><option value="">assign identity…</option>{data.profiles.filter((profile) => !profile.blacklisted).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select>
-            <div className="flex gap-2"><button disabled={reviewBusy === sample.id || !(assignments[sample.id] || defaultProfile)} onClick={() => void review(sample.id, "approve", defaultProfile)} className="bg-cyan/15 text-cyan px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">approve</button><button disabled={reviewBusy === sample.id} onClick={() => void review(sample.id, "reject")} className="bg-danger/15 text-danger px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">reject</button></div>
+          const runComparison = reviewComparisons[sample.id] || sample.comparison;
+          return <div key={sample.id} className="p-5">
+            <div className="grid lg:grid-cols-[1fr_220px_auto] gap-4 items-center">
+              <div><div className="flex flex-wrap items-center gap-2"><span className="font-mono-tight text-[10px] uppercase px-2 py-1 rounded bg-cyan/10 text-cyan">{sample.mode === "1to1" ? "1:1" : "1:N"}</span><span className="text-sm">Predicted <strong>{sample.predicted_label || "no profile"}</strong></span><span className="text-xs text-muted">{best.similarity}% model similarity · {best.certainty}% certainty</span></div><div className="text-xs text-muted mt-2">{sample.true_label ? `User identified as ${sample.true_label}` : "Identity feedback still missing"} · {new Date(sample.created_at).toLocaleString()}</div></div>
+              <select value={assignments[sample.id] ?? defaultProfile} onChange={(event) => void selectReviewProfile(sample.id, event.target.value)} className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm"><option value="">compare with identity…</option>{data.profiles.filter((profile) => !profile.blacklisted).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select>
+              <div className="flex gap-2"><button disabled={reviewBusy === sample.id || !(assignments[sample.id] || defaultProfile)} onClick={() => void review(sample.id, "approve", defaultProfile)} className="bg-cyan/15 text-cyan px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">approve</button><button disabled={reviewBusy === sample.id} onClick={() => void review(sample.id, "reject")} className="bg-danger/15 text-danger px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">reject</button></div>
+            </div>
+            {comparisonBusy === sample.id ? <div className="mt-5 text-xs text-muted">recalculating profile coincidence…</div> : runComparison && <div className="mt-5 bg-surface-2 border border-border rounded-xl p-4">
+              <div className="flex flex-wrap justify-between items-end gap-3"><div><div className="text-xs text-muted">Identification run compared with original {runComparison.profile_label} profile</div><div className="font-mono-tight text-3xl text-cyan mt-1">{runComparison.overall_coincidence}% <span className="text-xs text-muted">feature coincidence</span></div></div><div className="text-xs text-muted">based on {runComparison.enrollment_sessions} trained session{runComparison.enrollment_sessions === 1 ? "" : "s"}</div></div>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 mt-5">{runComparison.categories.map((category) => <div key={category.category}><div className="flex justify-between gap-2 text-[10px] mb-1"><span>{category.category}</span><span className="font-mono-tight text-muted">{category.similarity}%</span></div><div className="h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-cyan rounded-full" style={{width:`${category.similarity}%`}}/></div></div>)}</div>
+              <div className="overflow-auto mt-5"><table className="w-full min-w-[700px] text-xs"><thead><tr className="text-left text-muted border-b border-border"><th className="py-2">measurement</th><th>identification run</th><th>trained profile average</th><th>difference</th></tr></thead><tbody>{runComparison.metrics.map((metric) => <tr key={metric.label} className="border-b border-border/50"><td className="py-2">{metric.label}</td><td className="font-mono-tight">{metric.probe == null ? "n/a" : `${metric.probe} ${metric.unit}`}</td><td className="font-mono-tight">{metric.profile == null ? "n/a" : `${metric.profile} ${metric.unit}`}</td><td className={`font-mono-tight ${metric.delta_percent != null && Math.abs(metric.delta_percent) <= 15 ? "text-cyan" : "text-muted"}`}>{metric.delta_percent == null ? "n/a" : `${metric.delta_percent > 0 ? "+" : ""}${metric.delta_percent}%`}</td></tr>)}</tbody></table></div>
+            </div>}
           </div>;
         })}</div>}
       </section>
