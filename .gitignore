@@ -1,0 +1,13 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+data/
+artifacts/
+*.pyc
+
+# Raw behavioral-biometric exports stay local. Use a synthetic or explicitly
+# consented workbook when reproducing the import pipeline.
+*.xlsx
+*.xls

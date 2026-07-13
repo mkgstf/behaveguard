@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #11131a;
+  --surface: #181b23;
+  --surface-2: #20242f;
+  --border: #2a2e3a;
+  --text: #e3e6ee;
+  --muted: #80869a;
+  --amber: #f2b84b;
+  --amber-dim: #5e4a26;
+  --cyan: #5ee0c4;
+  --cyan-dim: #295349;
+  --danger: #e8607a;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-amber: var(--amber);
+  --color-amber-dim: var(--amber-dim);
+  --color-cyan: var(--cyan);
+  --color-cyan-dim: var(--cyan-dim);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-inter), "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-space-mono), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  background-image:
+    radial-gradient(circle at 50% 0%, rgba(94, 224, 196, 0.05), transparent 45%),
+    radial-gradient(circle at 100% 100%, rgba(242, 184, 75, 0.04), transparent 45%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: var(--amber-dim);
+  color: var(--text);
+}
+
+.font-mono-tight {
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+@keyframes caret-blink {
+  0%, 45% { opacity: 1; }
+  50%, 95% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.caret {
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+.pulse-ring {
+  animation: pulse-ring 1.1s ease-out infinite;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fade-up 0.35s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret, .pulse-ring, .fade-up { animation: none !important; }
+}
+
+/* scrollbar, kept quiet */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 6px; }
