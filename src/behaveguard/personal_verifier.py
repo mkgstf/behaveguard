@@ -12,7 +12,12 @@ import torch
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, roc_curve
 from sklearn.preprocessing import RobustScaler
 
-from .config import PERSONAL_NEURAL_PATH, PERSONAL_NEURAL_REPORT_PATH, ensure_directories
+from .config import (
+    PERSONAL_NEURAL_DIR,
+    PERSONAL_NEURAL_PATH,
+    PERSONAL_NEURAL_REPORT_PATH,
+    ensure_directories,
+)
 from .database import all_training_rows, get_profile_by_label
 from .experiments import window_session
 from .features import extract_features, feature_vector
@@ -145,6 +150,7 @@ def _metric_summary(
 
 def train_personal_verifier(label: str, epochs: int = 25, window_count: int = 4, seed: int = 42) -> dict[str, Any]:
     ensure_directories()
+    _migrate_legacy_artifact()
     profile = get_profile_by_label(label)
     rows = all_training_rows()
     folds = personal_folds(rows, profile["id"])
@@ -191,7 +197,10 @@ def train_personal_verifier(label: str, epochs: int = 25, window_count: int = 4,
     report = {
         "created_at": datetime.now(UTC).isoformat(),
         "validity": "development_only_personal_leave_one_session_out",
-        "warning": "Only four genuine and eight impostor trials are available; rates have very wide uncertainty.",
+        "warning": (
+            f"Only {len(genuine_scores)} genuine and {len(impostor_scores)} impostor trials are available; "
+            "rates have very wide uncertainty."
+        ),
         "target_profile_id": profile["id"], "target_label": profile["label"],
         "genuine_sessions": len([row for row in rows if row["profile_id"] == profile["id"]]),
         "impostor_identities": len({row["profile_id"] for row in rows if row["profile_id"] != profile["id"]}),
@@ -201,21 +210,27 @@ def train_personal_verifier(label: str, epochs: int = 25, window_count: int = 4,
         "genuine_scores": [round(score, 4) for score in genuine_scores],
         "impostor_scores": [round(score, 4) for score in impostor_scores],
     }
+    artifact_path = _artifact_path(profile["id"])
+    report_path = _report_path(profile["id"])
     torch.save({
         "state_dict": copy.deepcopy(final_model.state_dict()), "feature_names": final_names,
         "scaler": {"center": final_scaler.center_.tolist(), "scale": final_scaler.scale_.tolist()},
         "target_profile_id": profile["id"], "target_label": profile["label"],
         "window_count": window_count, "threshold": operating_threshold,
         "epochs": epochs, "final_loss": final_history[-1], "report": report,
-    }, PERSONAL_NEURAL_PATH)
-    PERSONAL_NEURAL_REPORT_PATH.write_text(json.dumps(report, indent=2))
+    }, artifact_path)
+    report_path.write_text(json.dumps(report, indent=2))
+    _load_personal_artifact.cache_clear()
     return report
 
 
 def score_personal_verifier(payload: dict[str, Any], profile_id: str) -> dict[str, Any] | None:
-    if not PERSONAL_NEURAL_PATH.exists():
+    path = _artifact_path(profile_id)
+    if not path.exists():
+        _migrate_legacy_artifact()
+    if not path.exists():
         return None
-    artifact, model, scaler = _load_personal_artifact(PERSONAL_NEURAL_PATH.stat().st_mtime)
+    artifact, model, scaler = _load_personal_artifact(str(path), path.stat().st_mtime)
     if artifact["target_profile_id"] != profile_id:
         return None
     names = artifact["feature_names"]
@@ -227,9 +242,31 @@ def score_personal_verifier(payload: dict[str, Any], profile_id: str) -> dict[st
     }
 
 
-@lru_cache(maxsize=1)
-def _load_personal_artifact(modified_at: float):
+def _artifact_path(profile_id: str):
+    return PERSONAL_NEURAL_DIR / f"{profile_id}.pt"
+
+
+def _report_path(profile_id: str):
+    return PERSONAL_NEURAL_DIR / f"{profile_id}.json"
+
+
+def _migrate_legacy_artifact() -> None:
+    """Preserve the original single-profile artifact when upgrading storage."""
+    if not PERSONAL_NEURAL_PATH.exists():
+        return
     artifact = torch.load(PERSONAL_NEURAL_PATH, map_location="cpu", weights_only=False)
+    profile_id = str(artifact["target_profile_id"])
+    destination = _artifact_path(profile_id)
+    if not destination.exists():
+        destination.write_bytes(PERSONAL_NEURAL_PATH.read_bytes())
+    report_destination = _report_path(profile_id)
+    if PERSONAL_NEURAL_REPORT_PATH.exists() and not report_destination.exists():
+        report_destination.write_bytes(PERSONAL_NEURAL_REPORT_PATH.read_bytes())
+
+
+@lru_cache(maxsize=16)
+def _load_personal_artifact(path_string: str, modified_at: float):
+    artifact = torch.load(path_string, map_location="cpu", weights_only=False)
     names = artifact["feature_names"]
     scaler = RobustScaler()
     scaler.center_ = np.asarray(artifact["scaler"]["center"], dtype=float)

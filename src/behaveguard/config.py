@@ -11,8 +11,10 @@ MODEL_PATH = ARTIFACT_DIR / "behavior_model.joblib"
 NEURAL_PATH = ARTIFACT_DIR / "behavior_neural.pt"
 PERSONAL_NEURAL_PATH = ARTIFACT_DIR / "personal_neural.pt"
 PERSONAL_NEURAL_REPORT_PATH = ARTIFACT_DIR / "personal_neural_report.json"
+PERSONAL_NEURAL_DIR = ARTIFACT_DIR / "personal_neural"
 
 
 def ensure_directories() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    PERSONAL_NEURAL_DIR.mkdir(parents=True, exist_ok=True)

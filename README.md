@@ -62,7 +62,7 @@ The supplied workbook has one session per person, so its accuracy is suitable on
 
 The experiment command creates `artifacts/experiment_report.json`, tunes classical models and the RBF-SVM, runs keyboard/mouse ablations and profile comparisons, and saves an explicitly experimental BiLSTM + TCN artifact.
 
-The `personal-neural` command trains a target-specific binary verifier when one identity has at least three independent sessions and at least four distinct impostor identities are available. Its outer evaluation holds out one complete genuine parent session and a disjoint subset of impostor identities per fold. The saved personal vote is advisory and does not override the primary SVM/centroid decision.
+The `personal-neural` command trains a target-specific binary verifier when one identity has at least three independent sessions and at least four distinct impostor identities are available. Its outer evaluation holds out one complete genuine parent session and a disjoint subset of impostor identities per fold. Artifacts are stored per profile, so training another identity preserves existing personal verifiers. The saved personal vote is advisory and does not override the primary SVM/centroid decision.
 
 ## Data and privacy
 
