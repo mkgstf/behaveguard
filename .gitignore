@@ -11,3 +11,7 @@ artifacts/
 # consented workbook when reproducing the import pipeline.
 *.xlsx
 *.xls
+
+# Cleaned Kaggle CSV exports are derived biometric data; keep local and
+# upload to Kaggle directly. Produce with scripts/export_kaggle_dataset.py.
+kaggle_dataset/
