@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from .database import (
     add_session, create_profile, create_review_sample, delete_profile, get_profile,
@@ -77,7 +77,7 @@ def profiles(include_blacklisted: bool = Query(True)) -> list[dict]:
 def new_profile(request: ProfileCreate) -> dict:
     try:
         return create_profile(request.label)
-    except sqlite3.IntegrityError as error:
+    except IntegrityError as error:
         raise HTTPException(409, "A profile with this label already exists") from error
 
 

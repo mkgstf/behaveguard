@@ -1,131 +1,107 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import uuid
-from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Iterator
+from typing import Any
 
-from .config import DB_PATH, ensure_directories
+from sqlalchemy import func, select, update, delete as sa_delete
+
+from .db.engine import engine, session_scope
+from .db.models import Base, Profile, ReviewSample, Session as SessionRow, VerificationEvent
 
 
 def utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
-@contextmanager
-def connection() -> Iterator[sqlite3.Connection]:
-    ensure_directories()
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def init_db() -> None:
-    with connection() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS profiles (
-                id TEXT PRIMARY KEY,
-                label TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                blacklisted INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-                purpose TEXT NOT NULL,
-                collected_at TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                features TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id);
-            CREATE TABLE IF NOT EXISTS verification_events (
-                id TEXT PRIMARY KEY,
-                mode TEXT NOT NULL,
-                claimed_profile_id TEXT,
-                candidates TEXT NOT NULL,
-                result TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS review_samples (
-                id TEXT PRIMARY KEY,
-                verification_event_id TEXT REFERENCES verification_events(id) ON DELETE SET NULL,
-                mode TEXT NOT NULL,
-                claimed_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
-                predicted_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
-                candidate_ids TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                features TEXT NOT NULL,
-                result TEXT NOT NULL,
-                feedback_correct INTEGER,
-                true_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
-                status TEXT NOT NULL DEFAULT 'awaiting_feedback'
-                    CHECK(status IN ('awaiting_feedback','pending','approved','rejected')),
-                promoted_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-                created_at TEXT NOT NULL,
-                reviewed_at TEXT,
-                trained_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_review_samples_status ON review_samples(status, created_at);
-            """
-        )
-        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(review_samples)").fetchall()}
-        if "trained_at" not in columns:
-            conn.execute("ALTER TABLE review_samples ADD COLUMN trained_at TEXT")
+    """Idempotently ensure the schema exists.
+
+    This is a dev-convenience fallback (mirrors the old `CREATE TABLE IF NOT
+    EXISTS` behavior) so the app still works if someone runs it without ever
+    calling `alembic upgrade head`. For real deployments, Alembic
+    (`migrations/`) is the source of truth for schema changes; this function
+    should not diverge from what `migrations/versions/0001_initial.py`
+    creates.
+    """
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS vector")
+        Base.metadata.create_all(bind=connection)
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _profile_dict(profile: Profile, enrollment_count: int, last_enrollment: str | None) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "label": profile.label,
+        "blacklisted": int(profile.blacklisted),
+        "created_at": _iso(profile.created_at),
+        "updated_at": _iso(profile.updated_at),
+        "enrollment_count": int(enrollment_count),
+        "last_enrollment": last_enrollment,
+    }
 
 
 def create_profile(label: str) -> dict[str, Any]:
     profile_id = str(uuid.uuid4())
-    now = utcnow()
-    with connection() as conn:
-        conn.execute(
-            "INSERT INTO profiles(id,label,created_at,updated_at) VALUES(?,?,?,?)",
-            (profile_id, label.strip(), now, now),
-        )
+    with session_scope() as session:
+        session.add(Profile(id=profile_id, label=label.strip()))
     return get_profile(profile_id)
 
 
+def _list_profiles_query(session, include_blacklisted: bool):
+    query = (
+        select(
+            Profile,
+            func.count(SessionRow.id).label("enrollment_count"),
+            func.max(SessionRow.collected_at).label("last_enrollment"),
+        )
+        .outerjoin(SessionRow, SessionRow.profile_id == Profile.id)
+        .group_by(Profile.id)
+        .order_by(func.lower(Profile.label))
+    )
+    if not include_blacklisted:
+        query = query.where(Profile.blacklisted.is_(False))
+    return session.execute(query).all()
+
+
 def list_profiles(include_blacklisted: bool = True) -> list[dict[str, Any]]:
-    where = "" if include_blacklisted else "WHERE p.blacklisted = 0"
-    with connection() as conn:
-        rows = conn.execute(
-            f"""SELECT p.*, COUNT(s.id) AS enrollment_count,
-                MAX(s.collected_at) AS last_enrollment
-                FROM profiles p LEFT JOIN sessions s ON s.profile_id=p.id
-                {where} GROUP BY p.id ORDER BY p.label COLLATE NOCASE"""
-        ).fetchall()
-    return [dict(row) for row in rows]
+    with session_scope() as session:
+        rows = _list_profiles_query(session, include_blacklisted)
+        return [_profile_dict(profile, count, last) for profile, count, last in rows]
 
 
 def get_profile(profile_id: str) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute(
-            """SELECT p.*, COUNT(s.id) AS enrollment_count,
-            MAX(s.collected_at) AS last_enrollment
-            FROM profiles p LEFT JOIN sessions s ON s.profile_id=p.id
-            WHERE p.id=? GROUP BY p.id""",
-            (profile_id,),
-        ).fetchone()
-    if row is None:
-        raise KeyError(profile_id)
-    return dict(row)
+    with session_scope() as session:
+        query = (
+            select(
+                Profile,
+                func.count(SessionRow.id).label("enrollment_count"),
+                func.max(SessionRow.collected_at).label("last_enrollment"),
+            )
+            .outerjoin(SessionRow, SessionRow.profile_id == Profile.id)
+            .where(Profile.id == profile_id)
+            .group_by(Profile.id)
+        )
+        row = session.execute(query).first()
+        if row is None:
+            raise KeyError(profile_id)
+        profile, count, last = row
+        return _profile_dict(profile, count, last)
 
 
 def get_profile_by_label(label: str) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute("SELECT id FROM profiles WHERE label=? COLLATE NOCASE", (label.strip(),)).fetchone()
-    if row is None:
-        raise KeyError(label)
-    return get_profile(str(row["id"]))
+    with session_scope() as session:
+        row = session.execute(
+            select(Profile.id).where(func.lower(Profile.label) == label.strip().lower())
+        ).first()
+        if row is None:
+            raise KeyError(label)
+        profile_id = row[0]
+    return get_profile(profile_id)
 
 
 def _replace_profile_reference(value: Any, source_id: str, target_id: str) -> Any:
@@ -142,93 +118,100 @@ def merge_profiles(source_label: str, target_label: str) -> dict[str, Any]:
     target = get_profile_by_label(target_label)
     if source["id"] == target["id"]:
         return target
-    with connection() as conn:
-        review_rows = conn.execute("SELECT id,candidate_ids,result FROM review_samples").fetchall()
-        for row in review_rows:
-            candidates = _replace_profile_reference(json.loads(row["candidate_ids"]), source["id"], target["id"])
-            result = _replace_profile_reference(json.loads(row["result"]), source["id"], target["id"])
-            conn.execute(
-                "UPDATE review_samples SET candidate_ids=?,result=? WHERE id=?",
-                (json.dumps(candidates), json.dumps(result), row["id"]),
-            )
-        event_rows = conn.execute("SELECT id,candidates,result FROM verification_events").fetchall()
-        for row in event_rows:
-            candidates = _replace_profile_reference(json.loads(row["candidates"]), source["id"], target["id"])
-            result = _replace_profile_reference(json.loads(row["result"]), source["id"], target["id"])
-            conn.execute(
-                "UPDATE verification_events SET candidates=?,result=? WHERE id=?",
-                (json.dumps(candidates), json.dumps(result), row["id"]),
-            )
-        conn.execute("UPDATE sessions SET profile_id=? WHERE profile_id=?", (target["id"], source["id"]))
-        conn.execute("UPDATE verification_events SET claimed_profile_id=? WHERE claimed_profile_id=?", (target["id"], source["id"]))
+    with session_scope() as session:
+        for row in session.execute(select(ReviewSample)).scalars():
+            row.candidate_ids = _replace_profile_reference(row.candidate_ids, source["id"], target["id"])
+            row.result = _replace_profile_reference(row.result, source["id"], target["id"])
+        for row in session.execute(select(VerificationEvent)).scalars():
+            row.candidates = _replace_profile_reference(row.candidates, source["id"], target["id"])
+            row.result = _replace_profile_reference(row.result, source["id"], target["id"])
+        session.execute(
+            update(SessionRow).where(SessionRow.profile_id == source["id"]).values(profile_id=target["id"])
+        )
+        session.execute(
+            update(VerificationEvent)
+            .where(VerificationEvent.claimed_profile_id == source["id"])
+            .values(claimed_profile_id=target["id"])
+        )
         for column in ("claimed_profile_id", "predicted_profile_id", "true_profile_id"):
-            conn.execute(f"UPDATE review_samples SET {column}=? WHERE {column}=?", (target["id"], source["id"]))
-        conn.execute("DELETE FROM profiles WHERE id=?", (source["id"],))
-        conn.execute("UPDATE profiles SET updated_at=? WHERE id=?", (utcnow(), target["id"]))
+            session.execute(
+                update(ReviewSample).where(getattr(ReviewSample, column) == source["id"]).values(**{column: target["id"]})
+            )
+        session.execute(sa_delete(Profile).where(Profile.id == source["id"]))
+        session.execute(update(Profile).where(Profile.id == target["id"]).values(updated_at=datetime.now(UTC)))
     return get_profile(target["id"])
 
 
 def set_blacklist(profile_id: str, value: bool) -> dict[str, Any]:
-    with connection() as conn:
-        cur = conn.execute(
-            "UPDATE profiles SET blacklisted=?, updated_at=? WHERE id=?",
-            (int(value), utcnow(), profile_id),
+    with session_scope() as session:
+        result = session.execute(
+            update(Profile).where(Profile.id == profile_id).values(blacklisted=value, updated_at=datetime.now(UTC))
         )
-        if cur.rowcount == 0:
+        if result.rowcount == 0:
             raise KeyError(profile_id)
     return get_profile(profile_id)
 
 
 def delete_profile(profile_id: str) -> None:
-    with connection() as conn:
-        cur = conn.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
-        if cur.rowcount == 0:
+    with session_scope() as session:
+        result = session.execute(sa_delete(Profile).where(Profile.id == profile_id))
+        if result.rowcount == 0:
             raise KeyError(profile_id)
 
 
 def add_session(profile_id: str, payload: dict[str, Any], features: dict[str, float], purpose: str = "enroll") -> str:
     session_id = str(uuid.uuid4())
     collected_at = str(payload.get("collected_at") or utcnow())
-    with connection() as conn:
-        conn.execute(
-            "INSERT INTO sessions VALUES(?,?,?,?,?,?,?)",
-            (session_id, profile_id, purpose, collected_at, json.dumps(payload), json.dumps(features), utcnow()),
+    with session_scope() as session:
+        session.add(
+            SessionRow(
+                id=session_id, profile_id=profile_id, purpose=purpose,
+                collected_at=collected_at, payload=payload, features=features,
+            )
         )
-        conn.execute("UPDATE profiles SET updated_at=? WHERE id=?", (utcnow(), profile_id))
+        session.execute(
+            update(Profile).where(Profile.id == profile_id).values(updated_at=datetime.now(UTC))
+        )
     return session_id
 
 
 def all_training_rows() -> list[dict[str, Any]]:
-    with connection() as conn:
-        rows = conn.execute(
-            """SELECT s.id, s.profile_id, s.payload, s.features, s.collected_at, p.label
-            FROM sessions s JOIN profiles p ON p.id=s.profile_id
-            WHERE p.blacklisted=0 ORDER BY s.created_at"""
-        ).fetchall()
-    return [
-        {**dict(row), "payload": json.loads(row["payload"]), "features": json.loads(row["features"])}
-        for row in rows
-    ]
+    with session_scope() as session:
+        query = (
+            select(SessionRow, Profile.label)
+            .join(Profile, Profile.id == SessionRow.profile_id)
+            .where(Profile.blacklisted.is_(False))
+            .order_by(SessionRow.created_at)
+        )
+        rows = session.execute(query).all()
+        return [
+            {
+                "id": row.id, "profile_id": row.profile_id, "payload": row.payload,
+                "features": row.features, "collected_at": row.collected_at, "label": label,
+            }
+            for row, label in rows
+        ]
 
 
 def profile_sessions(profile_id: str) -> list[dict[str, Any]]:
-    with connection() as conn:
-        rows = conn.execute(
-            "SELECT id,collected_at,features,payload FROM sessions WHERE profile_id=? ORDER BY collected_at",
-            (profile_id,),
-        ).fetchall()
-    return [
-        {**dict(row), "features": json.loads(row["features"]), "payload": json.loads(row["payload"])}
-        for row in rows
-    ]
+    with session_scope() as session:
+        query = (
+            select(SessionRow)
+            .where(SessionRow.profile_id == profile_id)
+            .order_by(SessionRow.collected_at)
+        )
+        rows = session.execute(query).scalars().all()
+        return [
+            {"id": row.id, "collected_at": row.collected_at, "features": row.features, "payload": row.payload}
+            for row in rows
+        ]
 
 
 def log_verification(mode: str, claimed: str | None, candidates: list[str], result: dict[str, Any]) -> str:
     event_id = str(uuid.uuid4())
-    with connection() as conn:
-        conn.execute(
-            "INSERT INTO verification_events VALUES(?,?,?,?,?,?)",
-            (event_id, mode, claimed, json.dumps(candidates), json.dumps(result), utcnow()),
+    with session_scope() as session:
+        session.add(
+            VerificationEvent(id=event_id, mode=mode, claimed_profile_id=claimed, candidates=candidates, result=result)
         )
     return event_id
 
@@ -244,172 +227,169 @@ def create_review_sample(
     result: dict[str, Any],
 ) -> str:
     review_id = str(uuid.uuid4())
-    with connection() as conn:
-        conn.execute(
-            """INSERT INTO review_samples(
-                id,verification_event_id,mode,claimed_profile_id,predicted_profile_id,
-                candidate_ids,payload,features,result,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (
-                review_id, event_id, mode, claimed_profile_id, predicted_profile_id,
-                json.dumps(candidate_ids), json.dumps(payload), json.dumps(features), json.dumps(result), utcnow(),
-            ),
+    with session_scope() as session:
+        session.add(
+            ReviewSample(
+                id=review_id, verification_event_id=event_id, mode=mode,
+                claimed_profile_id=claimed_profile_id, predicted_profile_id=predicted_profile_id,
+                candidate_ids=candidate_ids, payload=payload, features=features, result=result,
+            )
         )
     return review_id
 
 
-def _review_row(row: sqlite3.Row) -> dict[str, Any]:
-    item = dict(row)
-    item["candidate_ids"] = json.loads(item["candidate_ids"])
-    item["result"] = json.loads(item["result"])
-    item["feedback_correct"] = None if item["feedback_correct"] is None else bool(item["feedback_correct"])
-    return item
+def _review_dict(row: ReviewSample, claimed_label: str | None, predicted_label: str | None, true_label: str | None) -> dict[str, Any]:
+    return {
+        "id": row.id, "mode": row.mode, "claimed_profile_id": row.claimed_profile_id,
+        "predicted_profile_id": row.predicted_profile_id, "candidate_ids": row.candidate_ids,
+        "result": row.result, "feedback_correct": row.feedback_correct, "true_profile_id": row.true_profile_id,
+        "status": row.status, "promoted_session_id": row.promoted_session_id,
+        "created_at": _iso(row.created_at), "reviewed_at": _iso(row.reviewed_at), "trained_at": _iso(row.trained_at),
+        "claimed_label": claimed_label, "predicted_label": predicted_label, "true_label": true_label,
+    }
+
+
+def _review_query(session, extra_where=None):
+    Claimed = Profile.__table__.alias("claimed")
+    Predicted = Profile.__table__.alias("predicted")
+    Truth = Profile.__table__.alias("truth")
+    query = (
+        select(ReviewSample, Claimed.c.label, Predicted.c.label, Truth.c.label)
+        .outerjoin(Claimed, Claimed.c.id == ReviewSample.claimed_profile_id)
+        .outerjoin(Predicted, Predicted.c.id == ReviewSample.predicted_profile_id)
+        .outerjoin(Truth, Truth.c.id == ReviewSample.true_profile_id)
+    )
+    if extra_where is not None:
+        query = query.where(extra_where)
+    return query
 
 
 def get_review_sample(review_id: str) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute(
-            """SELECT r.id,r.mode,r.claimed_profile_id,r.predicted_profile_id,r.candidate_ids,
-                r.result,r.feedback_correct,r.true_profile_id,r.status,r.promoted_session_id,
-                r.created_at,r.reviewed_at,r.trained_at,claimed.label AS claimed_label,
-                predicted.label AS predicted_label,truth.label AS true_label
-            FROM review_samples r
-            LEFT JOIN profiles claimed ON claimed.id=r.claimed_profile_id
-            LEFT JOIN profiles predicted ON predicted.id=r.predicted_profile_id
-            LEFT JOIN profiles truth ON truth.id=r.true_profile_id
-            WHERE r.id=?""",
-            (review_id,),
-        ).fetchone()
-    if row is None:
-        raise KeyError(review_id)
-    return _review_row(row)
+    with session_scope() as session:
+        row = session.execute(_review_query(session, ReviewSample.id == review_id)).first()
+        if row is None:
+            raise KeyError(review_id)
+        review, claimed_label, predicted_label, true_label = row
+        return _review_dict(review, claimed_label, predicted_label, true_label)
 
 
 def get_review_sample_material(review_id: str) -> dict[str, Any]:
     """Return sensitive probe material for server-side comparison only."""
-    with connection() as conn:
-        row = conn.execute("SELECT payload,features FROM review_samples WHERE id=?", (review_id,)).fetchone()
-    if row is None:
-        raise KeyError(review_id)
-    return {"payload": json.loads(row["payload"]), "features": json.loads(row["features"])}
+    with session_scope() as session:
+        row = session.execute(
+            select(ReviewSample.payload, ReviewSample.features).where(ReviewSample.id == review_id)
+        ).first()
+        if row is None:
+            raise KeyError(review_id)
+        return {"payload": row.payload, "features": row.features}
 
 
 def list_review_samples(statuses: tuple[str, ...] = ("awaiting_feedback", "pending")) -> list[dict[str, Any]]:
-    placeholders = ",".join("?" for _ in statuses)
-    with connection() as conn:
-        rows = conn.execute(
-            f"""SELECT r.id,r.mode,r.claimed_profile_id,r.predicted_profile_id,r.candidate_ids,
-                r.result,r.feedback_correct,r.true_profile_id,r.status,r.promoted_session_id,
-                r.created_at,r.reviewed_at,r.trained_at,claimed.label AS claimed_label,
-                predicted.label AS predicted_label,truth.label AS true_label
-            FROM review_samples r
-            LEFT JOIN profiles claimed ON claimed.id=r.claimed_profile_id
-            LEFT JOIN profiles predicted ON predicted.id=r.predicted_profile_id
-            LEFT JOIN profiles truth ON truth.id=r.true_profile_id
-            WHERE r.status IN ({placeholders}) ORDER BY r.created_at DESC""",
-            statuses,
-        ).fetchall()
-    return [_review_row(row) for row in rows]
+    with session_scope() as session:
+        query = _review_query(session, ReviewSample.status.in_(statuses)).order_by(ReviewSample.created_at.desc())
+        rows = session.execute(query).all()
+        return [_review_dict(review, claimed_label, predicted_label, true_label) for review, claimed_label, predicted_label, true_label in rows]
 
 
 def submit_review_feedback(review_id: str, prediction_correct: bool, true_profile_id: str | None) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute(
-            "SELECT predicted_profile_id,status FROM review_samples WHERE id=?",
-            (review_id,),
-        ).fetchone()
-        if row is None:
+    with session_scope() as session:
+        review = session.get(ReviewSample, review_id)
+        if review is None:
             raise KeyError(review_id)
-        if row["status"] in ("approved", "rejected"):
+        if review.status in ("approved", "rejected"):
             raise ValueError("This sample has already been reviewed")
-        target = true_profile_id or (str(row["predicted_profile_id"]) if prediction_correct and row["predicted_profile_id"] else None)
+        target = true_profile_id or (review.predicted_profile_id if prediction_correct and review.predicted_profile_id else None)
         if target is not None:
-            profile = conn.execute("SELECT blacklisted FROM profiles WHERE id=?", (target,)).fetchone()
+            profile = session.get(Profile, target)
             if profile is None:
                 raise KeyError(target)
-            if profile["blacklisted"]:
+            if profile.blacklisted:
                 raise ValueError("Feedback cannot target a blacklisted profile")
-        status = "pending" if target else "rejected"
-        conn.execute(
-            """UPDATE review_samples SET feedback_correct=?,true_profile_id=?,status=?,reviewed_at=?
-            WHERE id=?""",
-            (int(prediction_correct), target, status, utcnow(), review_id),
-        )
+        review.feedback_correct = prediction_correct
+        review.true_profile_id = target
+        review.status = "pending" if target else "rejected"
+        review.reviewed_at = datetime.now(UTC)
     return get_review_sample(review_id)
 
 
 def promote_review_sample(review_id: str, profile_id: str | None = None) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute("SELECT * FROM review_samples WHERE id=?", (review_id,)).fetchone()
-        if row is None:
+    with session_scope() as session:
+        review = session.get(ReviewSample, review_id)
+        if review is None:
             raise KeyError(review_id)
-        if row["status"] == "approved":
+        if review.status == "approved":
             raise ValueError("This sample has already been promoted")
-        if row["status"] == "rejected":
+        if review.status == "rejected":
             raise ValueError("A rejected sample cannot be promoted")
-        target = profile_id or row["true_profile_id"]
+        target = profile_id or review.true_profile_id
         if not target:
             raise ValueError("Assign a true identity before approving this sample")
-        profile = conn.execute("SELECT blacklisted FROM profiles WHERE id=?", (target,)).fetchone()
+        profile = session.get(Profile, target)
         if profile is None:
             raise KeyError(str(target))
-        if profile["blacklisted"]:
+        if profile.blacklisted:
             raise ValueError("A blacklisted profile cannot receive training samples")
         session_id = str(uuid.uuid4())
-        payload = json.loads(row["payload"])
-        conn.execute(
-            "INSERT INTO sessions VALUES(?,?,?,?,?,?,?)",
-            (
-                session_id, target, "reviewed_verification", str(payload.get("collected_at") or utcnow()),
-                row["payload"], row["features"], utcnow(),
-            ),
+        payload = review.payload
+        session.add(
+            SessionRow(
+                id=session_id, profile_id=target, purpose="reviewed_verification",
+                collected_at=str(payload.get("collected_at") or utcnow()),
+                payload=payload, features=review.features,
+            )
         )
-        now = utcnow()
-        conn.execute("UPDATE profiles SET updated_at=? WHERE id=?", (now, target))
-        conn.execute(
-            """UPDATE review_samples SET true_profile_id=?,status='approved',
-            promoted_session_id=?,reviewed_at=? WHERE id=?""",
-            (target, session_id, now, review_id),
-        )
+        # SQLAlchemy's unit-of-work doesn't know `review_samples.promoted_session_id`
+        # depends on this brand-new session row (no ORM relationship links them),
+        # so without an explicit flush here the INSERT and the following UPDATE
+        # can be emitted in the wrong order and trip the foreign key constraint.
+        session.flush()
+        now = datetime.now(UTC)
+        profile.updated_at = now
+        review.true_profile_id = target
+        review.status = "approved"
+        review.promoted_session_id = session_id
+        review.reviewed_at = now
     return get_review_sample(review_id)
 
 
 def reject_review_sample(review_id: str) -> dict[str, Any]:
-    with connection() as conn:
-        row = conn.execute("SELECT status FROM review_samples WHERE id=?", (review_id,)).fetchone()
-        if row is None:
+    with session_scope() as session:
+        review = session.get(ReviewSample, review_id)
+        if review is None:
             raise KeyError(review_id)
-        if row["status"] == "approved":
+        if review.status == "approved":
             raise ValueError("A promoted sample cannot be rejected")
-        conn.execute(
-            "UPDATE review_samples SET status='rejected',reviewed_at=? WHERE id=?",
-            (utcnow(), review_id),
-        )
+        review.status = "rejected"
+        review.reviewed_at = datetime.now(UTC)
     return get_review_sample(review_id)
 
 
 def review_sample_counts() -> dict[str, int]:
     counts = {status: 0 for status in ("awaiting_feedback", "pending", "approved", "rejected")}
-    with connection() as conn:
-        rows = conn.execute("SELECT status,COUNT(*) AS count FROM review_samples GROUP BY status").fetchall()
-    counts.update({str(row["status"]): int(row["count"]) for row in rows})
-    counts["available"] = counts["awaiting_feedback"] + counts["pending"]
-    with connection() as conn:
-        counts["ready_for_retrain"] = int(conn.execute(
-            "SELECT COUNT(*) FROM review_samples WHERE status='approved' AND trained_at IS NULL"
-        ).fetchone()[0])
+    with session_scope() as session:
+        rows = session.execute(
+            select(ReviewSample.status, func.count()).group_by(ReviewSample.status)
+        ).all()
+        counts.update({status: int(count) for status, count in rows})
+        counts["available"] = counts["awaiting_feedback"] + counts["pending"]
+        counts["ready_for_retrain"] = int(
+            session.execute(
+                select(func.count()).where(ReviewSample.status == "approved", ReviewSample.trained_at.is_(None))
+            ).scalar_one()
+        )
     return counts
 
 
 def mark_approved_samples_trained() -> int:
-    with connection() as conn:
-        cursor = conn.execute(
-            "UPDATE review_samples SET trained_at=? WHERE status='approved' AND trained_at IS NULL",
-            (utcnow(),),
+    with session_scope() as session:
+        result = session.execute(
+            update(ReviewSample)
+            .where(ReviewSample.status == "approved", ReviewSample.trained_at.is_(None))
+            .values(trained_at=datetime.now(UTC))
         )
-    return int(cursor.rowcount)
+    return int(result.rowcount)
 
 
 def verification_count() -> int:
-    with connection() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM verification_events").fetchone()[0])
+    with session_scope() as session:
+        return int(session.execute(select(func.count()).select_from(VerificationEvent)).scalar_one())

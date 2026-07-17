@@ -6,13 +6,42 @@ BehaveGuard is an integrated behavioral-authentication application with:
 - Detailed 1:1 behavioral verification.
 - Ranked 1:N identification across any selected profiles.
 - A quarantined verification-sample review queue with user identity feedback and admin-controlled promotion.
-- A FastAPI backend, SQLite persistence, RBF-SVM/centroid scoring, and an optional BiLSTM + TCN fusion model.
+- A FastAPI backend, PostgreSQL (+pgvector) persistence, RBF-SVM/centroid scoring, and an optional BiLSTM + TCN fusion model.
 - A Next.js admin dashboard for enrollment health, profile similarity, blacklisting, and deletion.
 
-## Start the backend
+> **Phase 0 of the production migration**: persistence moved from a local SQLite file to PostgreSQL (with the `pgvector` extension) plus a Redis instance (provisioned now; not yet used by the app — job-queue/cache wiring lands in a later phase). Schema is managed by Alembic. See `docker-compose.yml`.
+
+## 1. Start the data layer (PostgreSQL + Redis)
+
+```bash
+docker compose up -d
+```
+
+This starts Postgres 16 (with `pgvector` pre-installed) on `localhost:5432` and Redis on `localhost:6379`, matching the defaults in `behaveguard.config` (`DATABASE_URL`, `REDIS_URL`). Override either with an environment variable to point at a different instance (e.g. a staging RDS/Cloud SQL database).
+
+Apply the schema:
 
 ```bash
 uv sync --extra dev
+uv run alembic upgrade head
+```
+
+`alembic upgrade head` is the source of truth for schema changes going forward. `database.init_db()` still runs `CREATE TABLE IF NOT EXISTS`-equivalent logic on startup as a dev-convenience fallback, but production deployments should rely on Alembic migrations, not on that fallback, to change the schema.
+
+### Migrating an existing SQLite dev database
+
+If you have an existing `data/behaveguard.db` from before this change:
+
+```bash
+uv run python scripts/migrate_sqlite_to_postgres.py --dry-run   # preview counts
+uv run python scripts/migrate_sqlite_to_postgres.py             # migrate for real
+```
+
+The script preserves original ids, timestamps, and cross-table references (e.g. `review_samples.promoted_session_id`) exactly, and is safe to re-run — rows that already exist in Postgres (matched by id) are skipped.
+
+## 2. Start the backend
+
+```bash
 uv run behaveguard import-xlsx Behaveguard-client.xlsx
 uv run behaveguard serve --reload
 ```
@@ -38,6 +67,7 @@ uv run behaveguard serve
 cd behaveguard-client && npm run build && npm run start -- --hostname 127.0.0.1 --port 3000
 cloudflared tunnel run behaveguard
 ```
+
 
 The local Cloudflare configuration maps `behave.amehta.space` to `http://127.0.0.1:3000`. The site is available only while the laptop is awake, connected, and all three processes are running.
 

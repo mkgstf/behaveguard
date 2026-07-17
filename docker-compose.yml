@@ -1,0 +1,38 @@
+name: behaveguard
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: behaveguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: behaveguard
+      POSTGRES_PASSWORD: behaveguard
+      POSTGRES_DB: behaveguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - behaveguard-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U behaveguard -d behaveguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: behaveguard-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - behaveguard-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  behaveguard-postgres-data:
+  behaveguard-redis-data:
