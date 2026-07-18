@@ -4,7 +4,7 @@ import typer
 import uvicorn
 
 from .api import app as api_app
-from .database import init_db, merge_profiles
+from .database import create_claim_token, get_profile_by_label, init_db, merge_profiles, promote_user_role
 from .importer import import_xlsx
 from .modeling import model_status, retrain_model
 from .training import train_neural
@@ -69,3 +69,52 @@ def merge_profile_command(source: str, target: str) -> None:
     init_db()
     typer.echo(merge_profiles(source, target))
     typer.echo({"classical": retrain_model()})
+
+
+@app.command("promote-admin")
+def promote_admin(
+    email: str,
+    role: str = typer.Option("platform_admin", help="'org_admin' or 'platform_admin'"),
+) -> None:
+    """Promote an already-registered account to an admin role.
+
+    This is the *only* way an account ever becomes org_admin/platform_admin —
+    there is no HTTP route for it, by design (see Phase 1 spec: every
+    account is created identically through self-service register/Google
+    login; only role promotion is operator-only, and only reachable here).
+    The account must already exist (register it normally first).
+    """
+    init_db()
+    if not typer.confirm(f"Promote {email} to role={role!r}? This takes effect immediately."):
+        raise typer.Abort()
+    try:
+        user = promote_user_role(email, role)
+    except KeyError:
+        typer.echo(f"No account found for {email!r} — they need to register first.")
+        raise typer.Exit(1)
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1)
+    typer.echo({"email": user["email"], "role": user["role"]})
+
+
+@app.command("generate-claim-token")
+def generate_claim_token(profile_label: str) -> None:
+    """Generate a one-time link for the real owner of a pre-existing/legacy
+    profile (e.g. one created by `import-xlsx`) to connect it to their own
+    self-registered account. Send the printed token to that person yourself
+    (email, Slack, in person) — there is no automated delivery in Phase 1.
+    """
+    init_db()
+    try:
+        profile = get_profile_by_label(profile_label)
+    except KeyError:
+        typer.echo(f"No profile found with label {profile_label!r}.")
+        raise typer.Exit(1)
+    try:
+        token = create_claim_token(profile["id"])
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1)
+    typer.echo(f"Claim token for '{profile_label}' (send this to its real owner):")
+    typer.echo(token)

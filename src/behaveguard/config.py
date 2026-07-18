@@ -30,6 +30,30 @@ PERSONAL_NEURAL_PATH = ARTIFACT_DIR / "personal_neural.pt"
 PERSONAL_NEURAL_REPORT_PATH = ARTIFACT_DIR / "personal_neural_report.json"
 PERSONAL_NEURAL_DIR = ARTIFACT_DIR / "personal_neural"
 
+# --- Phase 1: auth ---------------------------------------------------------
+
+# HS256-signed JWTs. In production this must be set to a long random value
+# via env var — the fallback here is only for local dev convenience and is
+# intentionally obvious/unsafe so it's never mistaken for a real secret.
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-only-insecure-secret-change-me")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+
+# Profile claim tokens (linking a pre-existing/legacy profile to a newly
+# registered account) — see database.create_claim_token / claim_profile.
+CLAIM_TOKEN_EXPIRE_DAYS = int(os.getenv("CLAIM_TOKEN_EXPIRE_DAYS", "7"))
+
+# Google OAuth ("Sign in with Google"). Required only for the
+# /auth/google/* routes; password-based register/login work without these.
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/v1/auth/google/callback")
+
+# Where to send the browser after a successful Google login, with tokens in
+# the URL fragment (see api.py's /auth/google/callback for why a fragment).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
 
 def ensure_directories() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update, delete as sa_delete
 
+from .config import CLAIM_TOKEN_EXPIRE_DAYS
 from .db.engine import engine, session_scope
-from .db.models import Base, Profile, ReviewSample, Session as SessionRow, VerificationEvent
+from .db.models import (
+    Base,
+    Profile,
+    ProfileClaimToken,
+    RefreshToken,
+    ReviewSample,
+    Session as SessionRow,
+    User,
+    VerificationEvent,
+)
 
 
 def utcnow() -> str:
@@ -37,6 +48,7 @@ def _profile_dict(profile: Profile, enrollment_count: int, last_enrollment: str 
     return {
         "id": profile.id,
         "label": profile.label,
+        "user_id": profile.user_id,
         "blacklisted": int(profile.blacklisted),
         "created_at": _iso(profile.created_at),
         "updated_at": _iso(profile.updated_at),
@@ -45,14 +57,18 @@ def _profile_dict(profile: Profile, enrollment_count: int, last_enrollment: str 
     }
 
 
-def create_profile(label: str) -> dict[str, Any]:
+def create_profile(label: str, user_id: str | None = None) -> dict[str, Any]:
+    """`user_id=None` preserves the Phase-0 behavior (admin/import-created,
+    unowned profile). Self-service enrollment (Phase 1) passes the
+    registering user's id; the `uq_profiles_user_id` DB constraint enforces
+    one profile per user regardless of caller."""
     profile_id = str(uuid.uuid4())
     with session_scope() as session:
-        session.add(Profile(id=profile_id, label=label.strip()))
+        session.add(Profile(id=profile_id, label=label.strip(), user_id=user_id))
     return get_profile(profile_id)
 
 
-def _list_profiles_query(session, include_blacklisted: bool):
+def _list_profiles_query(session, include_blacklisted: bool, owner_user_id: str | None = None):
     query = (
         select(
             Profile,
@@ -65,12 +81,17 @@ def _list_profiles_query(session, include_blacklisted: bool):
     )
     if not include_blacklisted:
         query = query.where(Profile.blacklisted.is_(False))
+    if owner_user_id is not None:
+        query = query.where(Profile.user_id == owner_user_id)
     return session.execute(query).all()
 
 
-def list_profiles(include_blacklisted: bool = True) -> list[dict[str, Any]]:
+def list_profiles(include_blacklisted: bool = True, owner_user_id: str | None = None) -> list[dict[str, Any]]:
+    """`owner_user_id` restricts results to profiles owned by that user —
+    used by the API layer to implement "a `user`-role caller only sees their
+    own profile(s)" without duplicating the join/aggregation logic."""
     with session_scope() as session:
-        rows = _list_profiles_query(session, include_blacklisted)
+        rows = _list_profiles_query(session, include_blacklisted, owner_user_id)
         return [_profile_dict(profile, count, last) for profile, count, last in rows]
 
 
@@ -91,6 +112,15 @@ def get_profile(profile_id: str) -> dict[str, Any]:
             raise KeyError(profile_id)
         profile, count, last = row
         return _profile_dict(profile, count, last)
+
+
+def get_profile_by_user(user_id: str) -> dict[str, Any] | None:
+    """Returns the caller's own profile, or None if they haven't enrolled
+    yet. Relies on the DB-level `uq_profiles_user_id` constraint guaranteeing
+    at most one match."""
+    with session_scope() as session:
+        row = session.execute(select(Profile.id).where(Profile.user_id == user_id)).first()
+    return get_profile(row[0]) if row else None
 
 
 def get_profile_by_label(label: str) -> dict[str, Any]:
@@ -393,3 +423,218 @@ def mark_approved_samples_trained() -> int:
 def verification_count() -> int:
     with session_scope() as session:
         return int(session.execute(select(func.count()).select_from(VerificationEvent)).scalar_one())
+
+
+# --- Phase 1: users, refresh tokens, profile claim tokens -------------------
+
+
+def _user_dict(user: User) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "org_id": user.org_id,
+        "email": user.email,
+        "oauth_provider": user.oauth_provider,
+        "role": user.role,
+        "status": user.status,
+        "created_at": _iso(user.created_at),
+        "updated_at": _iso(user.updated_at),
+    }
+
+
+def create_user(
+    email: str,
+    password_hash: str | None = None,
+    oauth_provider: str | None = None,
+    oauth_subject: str | None = None,
+) -> dict[str, Any]:
+    """Always creates `role='user'`. There is deliberately no parameter to
+    set a different role here — promotion only happens via
+    `promote_user_role`, which is only ever invoked from the CLI."""
+    user_id = str(uuid.uuid4())
+    with session_scope() as session:
+        session.add(
+            User(
+                id=user_id,
+                email=email.strip().lower(),
+                password_hash=password_hash,
+                oauth_provider=oauth_provider,
+                oauth_subject=oauth_subject,
+            )
+        )
+    return get_user(user_id)
+
+
+def get_user(user_id: str) -> dict[str, Any]:
+    with session_scope() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise KeyError(user_id)
+        return _user_dict(user)
+
+
+def get_user_password_hash(user_id: str) -> str | None:
+    """Separate accessor so `_user_dict`/`get_user` never leaks the hash into
+    API responses by accident."""
+    with session_scope() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise KeyError(user_id)
+        return user.password_hash
+
+
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(select(User.id).where(func.lower(User.email) == email.strip().lower())).first()
+    return get_user(row[0]) if row else None
+
+
+def get_user_credentials_by_email(email: str) -> tuple[dict[str, Any], str | None] | None:
+    """Login needs the password hash in the same lookup as the public user
+    dict, without a second round trip or leaking the hash through
+    `get_user_by_email`."""
+    with session_scope() as session:
+        row = session.execute(select(User).where(func.lower(User.email) == email.strip().lower())).first()
+        if row is None:
+            return None
+        user = row[0]
+        return _user_dict(user), user.password_hash
+
+
+def get_user_by_oauth(provider: str, subject: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(User.id).where(User.oauth_provider == provider, User.oauth_subject == subject)
+        ).first()
+    return get_user(row[0]) if row else None
+
+
+def link_oauth_identity(user_id: str, provider: str, subject: str) -> dict[str, Any]:
+    """Attaches a Google identity to an existing password account with a
+    matching, verified email — 'same person, two ways to log in', per the
+    Phase 1 spec."""
+    with session_scope() as session:
+        result = session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(oauth_provider=provider, oauth_subject=subject, updated_at=datetime.now(UTC))
+        )
+        if result.rowcount == 0:
+            raise KeyError(user_id)
+    return get_user(user_id)
+
+
+def promote_user_role(email: str, role: str) -> dict[str, Any]:
+    """The *only* path by which a user ever becomes 'org_admin' or
+    'platform_admin' — invoked exclusively by the `promote-admin` CLI
+    command, never reachable over HTTP."""
+    if role not in ("user", "org_admin", "platform_admin"):
+        raise ValueError(f"Invalid role: {role}")
+    user = get_user_by_email(email)
+    if user is None:
+        raise KeyError(email)
+    with session_scope() as session:
+        session.execute(
+            update(User).where(User.id == user["id"]).values(role=role, updated_at=datetime.now(UTC))
+        )
+    return get_user(user["id"])
+
+
+def store_refresh_token(user_id: str, token_hash: str, expires_at: datetime) -> str:
+    token_id = str(uuid.uuid4())
+    with session_scope() as session:
+        session.add(RefreshToken(id=token_id, user_id=user_id, token_hash=token_hash, expires_at=expires_at))
+    return token_id
+
+
+def get_active_refresh_token(token_hash: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > datetime.now(UTC),
+            )
+        ).first()
+        if row is None:
+            return None
+        token = row[0]
+        return {"id": token.id, "user_id": token.user_id, "expires_at": _iso(token.expires_at)}
+
+
+def revoke_refresh_token(token_hash: str) -> None:
+    with session_scope() as session:
+        session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.token_hash == token_hash, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+
+
+def revoke_all_refresh_tokens_for_user(user_id: str) -> int:
+    with session_scope() as session:
+        result = session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+    return int(result.rowcount)
+
+
+# --- Profile claim tokens ----------------------------------------------------
+
+
+def create_claim_token(profile_id: str) -> str:
+    """Generates a one-time link an operator hands to the real owner of a
+    pre-existing/legacy profile. Raises if that profile is already owned or
+    already has a live (unexpired, unclaimed) token — matches the DB's
+    `profile_claim_tokens.profile_id UNIQUE` constraint, checked here first
+    for a clean error message instead of a raw IntegrityError."""
+    with session_scope() as session:
+        profile = session.get(Profile, profile_id)
+        if profile is None:
+            raise KeyError(profile_id)
+        if profile.user_id is not None:
+            raise ValueError("This profile is already claimed by an account")
+        existing = session.execute(
+            select(ProfileClaimToken).where(ProfileClaimToken.profile_id == profile_id)
+        ).first()
+        if existing is not None:
+            session.execute(sa_delete(ProfileClaimToken).where(ProfileClaimToken.profile_id == profile_id))
+        raw_token = secrets.token_urlsafe(32)
+        session.add(
+            ProfileClaimToken(
+                id=str(uuid.uuid4()),
+                profile_id=profile_id,
+                token=raw_token,
+                expires_at=datetime.now(UTC) + timedelta(days=CLAIM_TOKEN_EXPIRE_DAYS),
+            )
+        )
+    return raw_token
+
+
+def claim_profile(token: str, user_id: str) -> dict[str, Any]:
+    """Links a pre-existing profile to the calling (already-registered,
+    already-logged-in) user's account. Never creates an account — only ever
+    connects one that already exists to a profile."""
+    with session_scope() as session:
+        claim = session.execute(select(ProfileClaimToken).where(ProfileClaimToken.token == token)).first()
+        if claim is None:
+            raise KeyError("Invalid claim token")
+        claim = claim[0]
+        if claim.claimed_at is not None:
+            raise ValueError("This claim token has already been used")
+        if claim.expires_at < datetime.now(UTC):
+            raise ValueError("This claim token has expired")
+        existing_owner = session.execute(select(Profile.user_id).where(Profile.id == claim.profile_id)).scalar_one()
+        if existing_owner is not None:
+            raise ValueError("This profile has already been claimed")
+        already_owns = session.execute(select(Profile.id).where(Profile.user_id == user_id)).first()
+        if already_owns is not None:
+            raise ValueError("Your account is already linked to a profile")
+        session.execute(
+            update(Profile).where(Profile.id == claim.profile_id).values(user_id=user_id, updated_at=datetime.now(UTC))
+        )
+        claim.claimed_by_user_id = user_id
+        claim.claimed_at = datetime.now(UTC)
+        profile_id = claim.profile_id
+    return get_profile(profile_id)

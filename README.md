@@ -48,6 +48,42 @@ uv run behaveguard serve --reload
 
 The workbook import is idempotent. `elrond` and `akshit` are known aliases for the canonical `saruman` identity; those labels are deliberately canonicalized rather than trained as separate people. The original development workbook therefore initializes 9 profiles from 10 sessions.
 
+## 3. Auth (Phase 1)
+
+Every API route except `/health` and `/auth/*` now requires a logged-in user. There is **no admin-creation route** — every account, including admins, is created identically via self-service register or Google login; the only difference is a one-time role promotion run directly against the database.
+
+**Environment variables** (all optional for local dev — see defaults in `config.py`; set real values before deploying anywhere reachable):
+
+```bash
+JWT_SECRET_KEY=<a long random string>       # required in any non-local environment
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=30
+CLAIM_TOKEN_EXPIRE_DAYS=7
+
+# Only needed for "Sign in with Google" — password register/login work without these.
+GOOGLE_CLIENT_ID=<from Google Cloud Console>
+GOOGLE_CLIENT_SECRET=<from Google Cloud Console>
+GOOGLE_REDIRECT_URI=http://localhost:8000/api/v1/auth/google/callback
+FRONTEND_URL=http://localhost:3000
+```
+
+To enable Google login: in Google Cloud Console → **APIs & Services → Credentials → Create Credentials → OAuth client ID → Web application**, add `http://localhost:8000/api/v1/auth/google/callback` as an authorized redirect URI, and copy the generated Client ID/Secret into the env vars above.
+
+**Creating the (two) admin accounts** — register normally through the app first, then:
+
+```bash
+uv run behaveguard promote-admin admin@example.com --role platform_admin
+```
+
+**Linking a pre-existing/legacy profile** (e.g. one created by `import-xlsx`) to its real owner's new account:
+
+```bash
+uv run behaveguard generate-claim-token saruman
+# -> prints a one-time token; send it to that person yourself (email/Slack/in person)
+```
+
+They register or log in normally, then call `POST /api/v1/profiles/claim` with `{"token": "..."}` while authenticated.
+
 ## Start the frontend
 
 ```bash
@@ -57,6 +93,8 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. The frontend uses the same-origin `/api/v1` path, which Next.js proxies to `http://127.0.0.1:8000` by default. Set server-side `BACKEND_URL` to change the proxy destination, or `NEXT_PUBLIC_API_URL` only when intentionally serving the API from a separate public origin.
+
+> **Note:** the frontend does not yet have a login screen (that's Phase 1.5) — for now, exercise auth via `/api/v1/auth/*` directly (curl/Postman) or the automated tests in `tests/test_auth.py`.
 
 ## Temporary laptop hosting with Cloudflare Tunnel
 

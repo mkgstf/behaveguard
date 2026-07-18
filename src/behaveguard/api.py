@@ -1,23 +1,40 @@
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.exc import IntegrityError
 
-from .database import (
-    add_session, create_profile, create_review_sample, delete_profile, get_profile,
-    get_review_sample_material, init_db, list_profiles, list_review_samples, log_verification, profile_sessions,
-    mark_approved_samples_trained, promote_review_sample, reject_review_sample, review_sample_counts, set_blacklist,
-    submit_review_feedback, verification_count,
+from . import oauth_google
+from .auth import (
+    CurrentUser,
+    create_access_token,
+    get_current_user,
+    hash_password,
+    hash_refresh_token,
+    new_refresh_token,
+    require_admin,
+    require_platform_admin,
+    verify_password,
 )
+from .config import ARTIFACT_DIR, FRONTEND_URL, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
+from .database import (
+    add_session, claim_profile, create_profile, create_review_sample, delete_profile,
+    get_active_refresh_token, get_profile, get_profile_by_user, get_review_sample_material,
+    get_user_by_oauth, get_user_credentials_by_email, init_db, link_oauth_identity, list_profiles,
+    list_review_samples, log_verification, profile_sessions, mark_approved_samples_trained,
+    promote_review_sample, reject_review_sample, revoke_refresh_token, review_sample_counts, set_blacklist,
+    store_refresh_token, submit_review_feedback, verification_count,
+)
+from .database import create_user as db_create_user
 from .features import extract_features
 from .modeling import compare_detail, model_status, retrain_model, score_session
 from .training import train_neural
-from .config import ARTIFACT_DIR, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
 from .profile_analytics import build_character_cards, compare_probe_to_profile
 
 
@@ -47,6 +64,24 @@ class ReviewAction(BaseModel):
     profile_id: str | None = None
 
 
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=200)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class ClaimRequest(BaseModel):
+    token: str
+
+
 app = FastAPI(title="BehaveGuard API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -68,21 +103,144 @@ def health() -> dict:
     return {"status": "ok", "model": model_status()}
 
 
+def _issue_token_pair(user: dict[str, Any]) -> dict[str, Any]:
+    access_token = create_access_token(user["id"], user["role"], user["org_id"])
+    raw_refresh, refresh_hash, expires_at = new_refresh_token()
+    store_refresh_token(user["id"], refresh_hash, expires_at)
+    return {"access_token": access_token, "refresh_token": raw_refresh, "token_type": "bearer", "user": user}
+
+
+@app.post("/api/v1/auth/register", status_code=201)
+def register(request: RegisterRequest) -> dict:
+    """Self-service only — every account is created this way (or via Google
+    login below), always as role='user'. There is no admin-creates-user
+    route anywhere in this API."""
+    try:
+        user = db_create_user(request.email, password_hash=hash_password(request.password))
+    except IntegrityError as error:
+        raise HTTPException(409, "An account with this email already exists") from error
+    return _issue_token_pair(user)
+
+
+@app.post("/api/v1/auth/login")
+def login(request: LoginRequest) -> dict:
+    found = get_user_credentials_by_email(request.email)
+    if found is None:
+        raise HTTPException(401, "Invalid email or password")
+    user, password_hash = found
+    if password_hash is None or not verify_password(request.password, password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    if user["status"] != "active":
+        raise HTTPException(403, "Account is not active")
+    return _issue_token_pair(user)
+
+
+@app.post("/api/v1/auth/refresh")
+def refresh_token_route(request: RefreshRequest) -> dict:
+    token_hash = hash_refresh_token(request.refresh_token)
+    active = get_active_refresh_token(token_hash)
+    if active is None:
+        raise HTTPException(401, "Refresh token is invalid, expired, or already used")
+    # Rotation: the old token is revoked as soon as it's redeemed, whether or
+    # not anything below fails, so a replayed old token can never succeed twice.
+    revoke_refresh_token(token_hash)
+    from .database import get_user
+
+    user = get_user(active["user_id"])
+    if user["status"] != "active":
+        raise HTTPException(403, "Account is not active")
+    return _issue_token_pair(user)
+
+
+@app.post("/api/v1/auth/logout", status_code=204)
+def logout(request: RefreshRequest) -> None:
+    revoke_refresh_token(hash_refresh_token(request.refresh_token))
+
+
+@app.get("/api/v1/auth/me")
+def me(current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    from .database import get_user
+
+    return get_user(current_user.id)
+
+
+@app.get("/api/v1/auth/google/login")
+def google_login() -> RedirectResponse:
+    state = oauth_google.new_state_token()
+    url = oauth_google.build_authorization_url(state)
+    response = RedirectResponse(url)
+    # Short-lived, httponly cookie carries the CSRF state across the
+    # redirect round-trip to Google and back; verified in the callback below.
+    response.set_cookie("bg_oauth_state", state, max_age=600, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/v1/auth/google/callback")
+def google_callback(code: str, state: str, request: Request) -> RedirectResponse:
+    expected_state = request.cookies.get("bg_oauth_state")
+    if not expected_state or not secrets.compare_digest(expected_state, state):
+        raise HTTPException(401, "Invalid or expired OAuth state")
+
+    id_token_jwt = oauth_google.exchange_code_for_id_token(code)
+    claims = oauth_google.verify_id_token(id_token_jwt)
+    email, subject = claims["email"], claims["sub"]
+
+    user = get_user_by_oauth("google", subject)
+    if user is None:
+        existing = get_user_credentials_by_email(email)
+        if existing is not None:
+            # Same verified email as an existing password account — link
+            # rather than create a second account for the same person.
+            user = link_oauth_identity(existing[0]["id"], "google", subject)
+        else:
+            user = db_create_user(email, oauth_provider="google", oauth_subject=subject)
+
+    tokens = _issue_token_pair(user)
+    redirect_url = (
+        f"{FRONTEND_URL}/auth/callback"
+        f"#access_token={tokens['access_token']}&refresh_token={tokens['refresh_token']}"
+    )
+    # Tokens travel in the URL fragment, not the query string or a redirect
+    # body: fragments are never sent to the server or written to access
+    # logs, and the frontend can read+strip it client-side in one step.
+    response = RedirectResponse(redirect_url)
+    response.delete_cookie("bg_oauth_state")
+    return response
+
+
+@app.post("/api/v1/profiles/claim")
+def claim(request: ClaimRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    try:
+        profile = claim_profile(request.token, current_user.id)
+        retrain_model()
+        return profile
+    except KeyError as error:
+        raise HTTPException(404, str(error) or "Invalid claim token") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
 @app.get("/api/v1/profiles")
-def profiles(include_blacklisted: bool = Query(True)) -> list[dict]:
-    return list_profiles(include_blacklisted)
+def profiles(include_blacklisted: bool = Query(True), current_user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    owner_filter = None if current_user.is_admin else current_user.id
+    return list_profiles(include_blacklisted, owner_user_id=owner_filter)
 
 
 @app.post("/api/v1/profiles", status_code=201)
-def new_profile(request: ProfileCreate) -> dict:
+def new_profile(request: ProfileCreate, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Self-service enrollment only — always creates a profile owned by the
+    caller. There is no way to create a profile for someone else here; that's
+    what /profiles/claim is for (linking a *pre-existing* legacy profile)."""
+    if get_profile_by_user(current_user.id) is not None:
+        raise HTTPException(409, "Your account is already linked to a profile")
     try:
-        return create_profile(request.label)
+        return create_profile(request.label, user_id=current_user.id)
     except IntegrityError as error:
         raise HTTPException(409, "A profile with this label already exists") from error
 
 
 @app.patch("/api/v1/profiles/{profile_id}")
-def update_profile(profile_id: str, request: ProfileUpdate) -> dict:
+def update_profile(profile_id: str, request: ProfileUpdate, current_user: CurrentUser = Depends(require_admin)) -> dict:
     try:
         profile = set_blacklist(profile_id, request.blacklisted)
         retrain_model()
@@ -92,7 +250,7 @@ def update_profile(profile_id: str, request: ProfileUpdate) -> dict:
 
 
 @app.delete("/api/v1/profiles/{profile_id}", status_code=204)
-def remove_profile(profile_id: str) -> None:
+def remove_profile(profile_id: str, current_user: CurrentUser = Depends(require_admin)) -> None:
     try:
         delete_profile(profile_id)
         retrain_model()
@@ -100,12 +258,19 @@ def remove_profile(profile_id: str) -> None:
         raise HTTPException(404, "Profile not found") from error
 
 
-@app.post("/api/v1/profiles/{profile_id}/enroll")
-def enroll(profile_id: str, request: SessionRequest) -> dict:
+def _require_profile_access(profile_id: str, current_user: CurrentUser) -> dict:
     try:
         profile = get_profile(profile_id)
     except KeyError as error:
         raise HTTPException(404, "Profile not found") from error
+    if not current_user.is_admin and profile["user_id"] != current_user.id:
+        raise HTTPException(403, "You do not have access to this profile")
+    return profile
+
+
+@app.post("/api/v1/profiles/{profile_id}/enroll")
+def enroll(profile_id: str, request: SessionRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    profile = _require_profile_access(profile_id, current_user)
     if profile["blacklisted"]:
         raise HTTPException(403, "Blacklisted profiles cannot be enrolled")
     features = extract_features(request.session)
@@ -116,9 +281,9 @@ def enroll(profile_id: str, request: SessionRequest) -> dict:
 
 
 @app.post("/api/v1/verify/{profile_id}")
-def verify(profile_id: str, request: SessionRequest) -> dict:
+def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
     try:
-        profile = get_profile(profile_id)
+        profile = _require_profile_access(profile_id, current_user)
         if profile["blacklisted"]:
             raise HTTPException(403, "Profile is blacklisted")
         result = score_session(request.session, [profile_id])
@@ -138,7 +303,7 @@ def verify(profile_id: str, request: SessionRequest) -> dict:
 
 
 @app.post("/api/v1/identify")
-def identify(request: IdentifyRequest) -> dict:
+def identify(request: IdentifyRequest, current_user: CurrentUser = Depends(require_admin)) -> dict:
     valid = []
     labels = {}
     for profile_id in request.profile_ids:
@@ -168,7 +333,7 @@ def identify(request: IdentifyRequest) -> dict:
 
 
 @app.post("/api/v1/review-samples/{review_id}/feedback")
-def review_feedback(review_id: str, request: FeedbackRequest) -> dict:
+def review_feedback(review_id: str, request: FeedbackRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
     try:
         return submit_review_feedback(review_id, request.prediction_correct, request.true_profile_id)
     except KeyError as error:
@@ -178,7 +343,7 @@ def review_feedback(review_id: str, request: FeedbackRequest) -> dict:
 
 
 @app.get("/api/v1/admin/analytics")
-def admin_analytics() -> dict:
+def admin_analytics(current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     profiles = list_profiles()
     active = [profile for profile in profiles if not profile["blacklisted"]]
     similarity = []
@@ -232,7 +397,7 @@ def build_review_comparison(review_id: str, profile_id: str) -> dict:
 
 
 @app.get("/api/v1/admin/review-samples/{review_id}/comparison")
-def review_comparison(review_id: str, profile_id: str = Query(...)) -> dict:
+def review_comparison(review_id: str, profile_id: str = Query(...), current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     try:
         return build_review_comparison(review_id, profile_id)
     except KeyError as error:
@@ -240,7 +405,7 @@ def review_comparison(review_id: str, profile_id: str = Query(...)) -> dict:
 
 
 @app.patch("/api/v1/admin/review-samples/{review_id}")
-def review_sample(review_id: str, request: ReviewAction) -> dict:
+def review_sample(review_id: str, request: ReviewAction, current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     try:
         if request.action == "approve":
             return promote_review_sample(review_id, request.profile_id)
@@ -252,7 +417,7 @@ def review_sample(review_id: str, request: ReviewAction) -> dict:
 
 
 @app.post("/api/v1/admin/retrain")
-def retrain() -> dict:
+def retrain(current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     classical = retrain_model()
     neural = train_neural(epochs=20)
     included_review_samples = mark_approved_samples_trained()
@@ -260,7 +425,7 @@ def retrain() -> dict:
 
 
 @app.get("/api/v1/admin/profiles/{profile_id}/stats")
-def profile_stats(profile_id: str) -> dict:
+def profile_stats(profile_id: str, current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     try:
         profile = get_profile(profile_id)
     except KeyError as error:

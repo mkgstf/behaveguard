@@ -33,15 +33,104 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+class Organization(Base):
+    """Optional tenancy grouping. A solo user has `org_id = NULL` on their
+    `users` row; org-scoped features become meaningful once real team
+    accounts exist. Not required for Phase 1's core auth flow."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    plan: Mapped[str] = mapped_column(String(40), nullable=False, default="free")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+
+class User(Base):
+    """A real login. Always created via self-service /auth/register or
+    /auth/google/callback — there is deliberately no admin-creates-user path.
+    `role` starts at 'user' for every account; promotion to
+    'org_admin'/'platform_admin' happens only via the `promote-admin` CLI
+    command, run directly against the database, never over HTTP."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL for OAuth-only accounts (no password ever set).
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    oauth_provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    oauth_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user','org_admin','platform_admin')", name="ck_users_role"),
+        CheckConstraint("status IN ('active','suspended','deleted')", name="ck_users_status"),
+        # Case-insensitive email uniqueness + the (provider, subject) uniqueness
+        # for linked OAuth identities are created as indexes in the Alembic
+        # migration, same pattern as `profiles.label` in Phase 0.
+    )
+
+
+class RefreshToken(Base):
+    """Opaque, rotated-on-use refresh tokens. Stored hashed — never the raw
+    token — so a database leak alone can't be used to mint sessions."""
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (Index("idx_refresh_tokens_user", "user_id"),)
+
+
+class ProfileClaimToken(Base):
+    """One-time link an operator generates (via the `generate-claim-token`
+    CLI command) to let the real owner of a pre-existing/legacy profile
+    connect it to their own self-registered account. The account itself is
+    always created by the person, through the normal register/Google flow —
+    this table only ever authorizes the *link*, not the account."""
+
+    __tablename__ = "profile_claim_tokens"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    profile_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_by_user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Profile(Base):
-    """A biometric identity. In Phase 0 this is still the whole picture — the
-    `users`/`organizations` tables that give a profile a real logged-in owner
-    are introduced in Phase 1."""
+    """A biometric identity, now optionally owned by a real logged-in user.
+    `user_id` is nullable so Phase-0-era profiles (created by the XLSX
+    importer, with no owner) remain valid — they're claimable via
+    `ProfileClaimToken` rather than requiring a breaking migration."""
 
     __tablename__ = "profiles"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     label: Mapped[str] = mapped_column(String(80), nullable=False)
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     blacklisted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
@@ -55,6 +144,8 @@ class Profile(Base):
     # (`lower(label)`) directly in the Alembic migration rather than here,
     # since a same-class declarative `Index` can't cleanly reference
     # `func.lower(label)` before the class exists.
+    # `user_id UNIQUE` enforces the Phase 1 "one profile per user" rule at
+    # the database level, not just in application code.
 
 
 class Session(Base):
