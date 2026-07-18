@@ -1,12 +1,26 @@
 import { Profile, SessionData } from "./types";
+import { getAccessToken, refreshAccessToken } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
+  const token = getAccessToken();
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers || {}),
+    },
   });
+  // A 401 here means the access token expired mid-session (it's a 15-minute
+  // token) — refresh once and retry transparently rather than surfacing the
+  // failure to the caller. If refresh itself fails (revoked/expired refresh
+  // token), fall through to the normal error path below.
+  if (response.status === 401 && !retried) {
+    const newToken = await refreshAccessToken();
+    if (newToken) return request<T>(path, init, true);
+  }
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
     try {
@@ -22,6 +36,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   profiles: () => request<Profile[]>("/profiles?include_blacklisted=true"),
   createProfile: (label: string) => request<Profile>("/profiles", { method: "POST", body: JSON.stringify({ label }) }),
+  claimProfile: (token: string) => request<Profile>("/profiles/claim", { method: "POST", body: JSON.stringify({ token }) }),
   blacklist: (id: string, blacklisted: boolean) => request<Profile>(`/profiles/${id}`, { method: "PATCH", body: JSON.stringify({ blacklisted }) }),
   deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
   enroll: (id: string, session: SessionData) => request<EnrollmentResult>(`/profiles/${id}/enroll`, { method: "POST", body: JSON.stringify({ session }) }),
@@ -32,6 +47,9 @@ export const api = {
   reviewComparison: (reviewId: string, profileId: string) => request<ReviewComparison>(`/admin/review-samples/${reviewId}/comparison?profile_id=${encodeURIComponent(profileId)}`),
   reviewSample: (reviewId: string, action: "approve" | "reject", profileId?: string) => request<ReviewSample>(`/admin/review-samples/${reviewId}`, { method: "PATCH", body: JSON.stringify({ action, profile_id: profileId || null }) }),
   retrain: () => request<RetrainingResult>("/admin/retrain", { method: "POST" }),
+  mergeScan: () => request<MergeScanResult>("/admin/merge/scan", { method: "POST" }),
+  mergeEvents: () => request<MergeEvent[]>("/admin/merge/events"),
+  revertMerge: (eventId: string) => request<MergeEvent>(`/admin/merge/${eventId}/revert`, { method: "POST" }),
 };
 
 export interface CandidateResult {
@@ -54,8 +72,11 @@ export interface VerificationResult {
   candidates: CandidateResult[];
   threshold: number;
   margin: number;
-  review_sample_id: string;
-  feedback_status: "awaiting_feedback" | "pending" | "approved" | "rejected";
+  // Phase 2: 1:1 self-verification no longer creates a review-queue entry
+  // (login already answers "who is this"), so these fields no longer exist
+  // on the response. `auto_enrolled` reports whether this confident
+  // self-check was folded into the profile's training data automatically.
+  auto_enrolled?: boolean;
   detail?: { category: string; similarity: number; feature_count: number }[];
 }
 
@@ -168,4 +189,23 @@ export interface ProfileCharacterCard {
   ratings: Record<string, number>;
   metrics: Record<string, number | null>;
   history: ({ collected_at: string } & Record<string, string | number | null>)[];
+}
+
+export interface MergeEvent {
+  id: string;
+  source_label: string;
+  source_user_id: string | null;
+  target_profile_id: string;
+  similarity_score: number;
+  method: string;
+  session_ids_moved: string[];
+  status: "applied" | "reverted";
+  created_at: string;
+  reverted_at: string | null;
+}
+
+export interface MergeScanResult {
+  threshold: number;
+  candidates_considered: number;
+  merged: { source_label: string; target_label: string; similarity: number; merge_event_id: string }[];
 }

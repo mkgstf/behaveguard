@@ -6,11 +6,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update, delete as sa_delete
+from sqlalchemy.exc import IntegrityError
 
 from .config import CLAIM_TOKEN_EXPIRE_DAYS
 from .db.engine import engine, session_scope
 from .db.models import (
     Base,
+    MergeEvent,
     Profile,
     ProfileClaimToken,
     RefreshToken,
@@ -638,3 +640,100 @@ def claim_profile(token: str, user_id: str) -> dict[str, Any]:
         claim.claimed_at = datetime.now(UTC)
         profile_id = claim.profile_id
     return get_profile(profile_id)
+
+
+# --- Phase 2: automatic merge audit trail + revert ---------------------------
+
+
+def _merge_event_dict(event: MergeEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "source_label": event.source_label,
+        "source_user_id": event.source_user_id,
+        "target_profile_id": event.target_profile_id,
+        "similarity_score": event.similarity_score,
+        "method": event.method,
+        "session_ids_moved": event.session_ids_moved,
+        "status": event.status,
+        "created_at": _iso(event.created_at),
+        "reverted_at": _iso(event.reverted_at),
+    }
+
+
+def merge_profiles_with_tracking(
+    source_label: str, target_label: str, similarity_score: float, method: str
+) -> dict[str, Any]:
+    """Same effect as `merge_profiles`, but first snapshots which sessions
+    belonged to the source profile and records a `MergeEvent`, so the merge
+    can later be undone with `revert_merge_event` — this is what makes
+    "no human approves a merge before it runs" an acceptable default instead
+    of a risk: nothing is approved beforehand, but everything is undoable
+    afterward.
+    """
+    source = get_profile_by_label(source_label)
+    target_before = get_profile_by_label(target_label)
+    with session_scope() as session:
+        session_ids = [
+            row[0] for row in session.execute(select(SessionRow.id).where(SessionRow.profile_id == source["id"]))
+        ]
+    merge_profiles(source_label, target_label)
+    with session_scope() as session:
+        event = MergeEvent(
+            id=str(uuid.uuid4()),
+            source_label=source["label"],
+            source_user_id=source["user_id"],
+            target_profile_id=target_before["id"],
+            similarity_score=similarity_score,
+            method=method,
+            session_ids_moved=session_ids,
+        )
+        session.add(event)
+        event_id = event.id
+    return get_merge_event(event_id)
+
+
+def get_merge_event(event_id: str) -> dict[str, Any]:
+    with session_scope() as session:
+        event = session.get(MergeEvent, event_id)
+        if event is None:
+            raise KeyError(event_id)
+        return _merge_event_dict(event)
+
+
+def list_merge_events() -> list[dict[str, Any]]:
+    with session_scope() as session:
+        rows = session.execute(select(MergeEvent).order_by(MergeEvent.created_at.desc())).scalars().all()
+        return [_merge_event_dict(row) for row in rows]
+
+
+def revert_merge_event(event_id: str) -> dict[str, Any]:
+    """Recreates the source profile (same label, same owning user if any)
+    and moves its originally-merged sessions back off the target profile.
+    Cannot undo any *new* sessions the target accumulated after the merge —
+    only the ones captured in `session_ids_moved` at merge time move back."""
+    with session_scope() as session:
+        event = session.get(MergeEvent, event_id)
+        if event is None:
+            raise KeyError(event_id)
+        if event.status == "reverted":
+            raise ValueError("This merge has already been reverted")
+        restored_id = str(uuid.uuid4())
+        try:
+            session.add(
+                Profile(id=restored_id, label=event.source_label, user_id=event.source_user_id)
+            )
+            session.flush()
+        except IntegrityError as error:
+            raise ValueError(
+                "Cannot revert: the original label or user is no longer available "
+                "(likely reused since the merge happened)"
+            ) from error
+        if event.session_ids_moved:
+            session.execute(
+                update(SessionRow)
+                .where(SessionRow.id.in_(event.session_ids_moved))
+                .values(profile_id=restored_id)
+            )
+        event.status = "reverted"
+        event.reverted_at = datetime.now(UTC)
+    return get_merge_event(event_id)

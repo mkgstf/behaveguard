@@ -22,17 +22,18 @@ from .auth import (
     require_platform_admin,
     verify_password,
 )
-from .config import ARTIFACT_DIR, FRONTEND_URL, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
+from .config import ARTIFACT_DIR, AUTO_ENROLLMENT_SIMILARITY_THRESHOLD, FRONTEND_URL, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
 from .database import (
-    add_session, claim_profile, create_profile, create_review_sample, delete_profile,
+    add_session, claim_profile, create_profile, delete_profile,
     get_active_refresh_token, get_profile, get_profile_by_user, get_review_sample_material,
-    get_user_by_oauth, get_user_credentials_by_email, init_db, link_oauth_identity, list_profiles,
-    list_review_samples, log_verification, profile_sessions, mark_approved_samples_trained,
-    promote_review_sample, reject_review_sample, revoke_refresh_token, review_sample_counts, set_blacklist,
-    store_refresh_token, submit_review_feedback, verification_count,
+    get_user_by_oauth, get_user_credentials_by_email, init_db, link_oauth_identity, list_merge_events,
+    list_profiles, list_review_samples, log_verification, profile_sessions, mark_approved_samples_trained,
+    promote_review_sample, reject_review_sample, revert_merge_event, revoke_refresh_token, review_sample_counts,
+    set_blacklist, store_refresh_token, submit_review_feedback, verification_count,
 )
 from .database import create_user as db_create_user
 from .features import extract_features
+from .merging import scan_and_auto_merge
 from .modeling import compare_detail, model_status, retrain_model, score_session
 from .training import train_neural
 from .profile_analytics import build_character_cards, compare_probe_to_profile
@@ -282,6 +283,17 @@ def enroll(profile_id: str, request: SessionRequest, current_user: CurrentUser =
 
 @app.post("/api/v1/verify/{profile_id}")
 def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Phase 2: no review-queue quarantine. Login already answers "who is
+    this" for a 1:1 self-check, so there's nothing left for a human reviewer
+    to confirm. `verification_events` still logs every attempt for audit
+    purposes; what's gone is the promote-after-approval workflow.
+
+    A confident match on the caller's *own* profile also auto-folds this
+    session into training data — the quality gate (a similarity bar well
+    above the accept threshold) plays the role the human reviewer used to
+    play, and is what makes "the profile keeps improving on its own every
+    time you verify" safe rather than an open door for drift.
+    """
     try:
         profile = _require_profile_access(profile_id, current_user)
         if profile["blacklisted"]:
@@ -290,11 +302,18 @@ def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser =
         result["best"]["label"] = profile["label"]
         features = result.pop("features")
         result["detail"] = compare_detail(profile_id, features)
-        event_id = log_verification("1to1", profile_id, [profile_id], result)
-        result["review_sample_id"] = create_review_sample(
-            event_id, "1to1", profile_id, profile_id, [profile_id], request.session, features, result,
-        )
-        result["feedback_status"] = "awaiting_feedback"
+        log_verification("1to1", profile_id, [profile_id], result)
+
+        auto_enrolled = False
+        if (
+            result.get("match")
+            and profile["user_id"] == current_user.id
+            and result["best"]["similarity"] >= AUTO_ENROLLMENT_SIMILARITY_THRESHOLD
+        ):
+            add_session(profile_id, request.session, features, purpose="auto_reenrollment")
+            retrain_model()
+            auto_enrolled = True
+        result["auto_enrolled"] = auto_enrolled
         return result
     except KeyError as error:
         raise HTTPException(404, "Profile not found") from error
@@ -304,6 +323,12 @@ def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser =
 
 @app.post("/api/v1/identify")
 def identify(request: IdentifyRequest, current_user: CurrentUser = Depends(require_admin)) -> dict:
+    """Phase 2: also no review-queue quarantine — logged purely as an
+    audited `verification_events` row. Identification results stay
+    admin-only (see `require_admin` above); if an admin wants to turn a
+    correctly-identified probe into training data, the supported path is
+    having that person's own account claim/re-enroll, not silently promoting
+    an arbitrary probe session."""
     valid = []
     labels = {}
     for profile_id in request.profile_ids:
@@ -324,11 +349,7 @@ def identify(request: IdentifyRequest, current_user: CurrentUser = Depends(requi
     for candidate in result["candidates"]:
         candidate["label"] = labels[candidate["profile_id"]]
     result["best"] = result["candidates"][0]
-    event_id = log_verification("1toN", None, valid, result)
-    result["review_sample_id"] = create_review_sample(
-        event_id, "1toN", None, result["best"]["profile_id"], valid, request.session, features, result,
-    )
-    result["feedback_status"] = "awaiting_feedback"
+    log_verification("1toN", None, valid, result)
     return result
 
 
@@ -422,6 +443,32 @@ def retrain(current_user: CurrentUser = Depends(require_platform_admin)) -> dict
     neural = train_neural(epochs=20)
     included_review_samples = mark_approved_samples_trained()
     return {"classical": classical, "neural": neural, "included_review_samples": included_review_samples}
+
+
+@app.post("/api/v1/admin/merge/scan")
+def merge_scan(current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
+    """Triggers an immediate auto-merge scan. No individual merge is
+    approved beforehand — see merging.scan_and_auto_merge's docstring for
+    why that's an acceptable default (conservative threshold + reversible
+    MergeEvent audit trail instead of a per-merge human gate)."""
+    return scan_and_auto_merge()
+
+
+@app.get("/api/v1/admin/merge/events")
+def merge_events(current_user: CurrentUser = Depends(require_platform_admin)) -> list[dict]:
+    return list_merge_events()
+
+
+@app.post("/api/v1/admin/merge/{event_id}/revert")
+def revert_merge(event_id: str, current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
+    try:
+        event = revert_merge_event(event_id)
+        retrain_model()
+        return event
+    except KeyError as error:
+        raise HTTPException(404, "Merge event not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 @app.get("/api/v1/admin/profiles/{profile_id}/stats")

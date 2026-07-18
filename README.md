@@ -94,7 +94,14 @@ npm run dev
 
 Open `http://localhost:3000`. The frontend uses the same-origin `/api/v1` path, which Next.js proxies to `http://127.0.0.1:8000` by default. Set server-side `BACKEND_URL` to change the proxy destination, or `NEXT_PUBLIC_API_URL` only when intentionally serving the API from a separate public origin.
 
-> **Note:** the frontend does not yet have a login screen (that's Phase 1.5) — for now, exercise auth via `/api/v1/auth/*` directly (curl/Postman) or the automated tests in `tests/test_auth.py`.
+The frontend now has a full login/register flow, Google sign-in, and a "claim a profile" screen (see below) — no need to hit `/api/v1/auth/*` directly anymore.
+
+## 4. What changed in Phase 2 (auto-enroll, no review queue, auto-merge)
+
+- **1:1 self-verification no longer creates a review-queue entry.** Login already answers "who is this," so there's nothing left for a human reviewer to confirm. A confident match (similarity ≥ `AUTO_ENROLLMENT_SIMILARITY_THRESHOLD`, default 85%) on your *own* profile is automatically folded in as an additional enrollment sample — the profile keeps improving every time you verify successfully, with no admin action required. The frontend's result screen shows this via an "auto-enrolled" indicator.
+- **Duplicate profiles are merged automatically**, not via a human-reviewed queue. `uv run behaveguard auto-merge-scan` (or `POST /api/v1/admin/merge/scan`) compares every active profile's centroid and merges anything above `AUTO_MERGE_SIMILARITY_THRESHOLD` (default 0.97, conservative on purpose). Every merge is logged as a reversible `MergeEvent` — undo one with `uv run behaveguard revert-merge <event_id>` or `POST /api/v1/admin/merge/{id}/revert`.
+- The old `review_samples` quarantine table/endpoints are untouched in the schema (so historical data isn't lost) but nothing new is written to them by `/verify` or `/identify` anymore.
+
 
 ## Temporary laptop hosting with Cloudflare Tunnel
 

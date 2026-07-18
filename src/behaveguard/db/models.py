@@ -148,6 +148,33 @@ class Profile(Base):
     # the database level, not just in application code.
 
 
+class MergeEvent(Base):
+    """Audit trail for an automatic profile merge — replaces the manual
+    `merge-profiles` CLI as the primary path (that command still exists for
+    one-off manual use, but the scan in `merging.py` is what runs normally).
+    No human approves a merge before it executes; this table is what makes
+    it reversible instead, via `session_ids_moved` + `revert_merge_event`."""
+
+    __tablename__ = "merge_events"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    source_label: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    target_profile_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    similarity_score: Mapped[float] = mapped_column(Float, nullable=False)
+    method: Mapped[str] = mapped_column(String(40), nullable=False)
+    session_ids_moved: Mapped[list] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="applied")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('applied','reverted')", name="ck_merge_events_status"),
+    )
+
+
 class Session(Base):
     """One recorded behavioral session: raw payload + derived features.
 

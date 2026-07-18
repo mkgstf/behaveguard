@@ -54,6 +54,21 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/ap
 # the URL fragment (see api.py's /auth/google/callback for why a fragment).
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# --- Phase 2: direct-enroll + auto-merge -----------------------------------
+
+# A self-verification (POST /verify/{own_profile_id}) at or above this
+# similarity is confident enough to fold in as an additional enrollment
+# session automatically — this is the "quality gate" that replaces a human
+# reviewer for re-enrollment. Deliberately higher than the ~62 match
+# threshold used for the accept/reject decision itself.
+AUTO_ENROLLMENT_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_ENROLLMENT_SIMILARITY_THRESHOLD", "85.0"))
+
+# Centroid cosine similarity (as a 0-1 fraction, not the 0-100 display scale)
+# above which two profiles are treated as the same person and auto-merged.
+# Deliberately conservative — this executes without human review, so a false
+# merge is much costlier than a missed one.
+AUTO_MERGE_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_MERGE_SIMILARITY_THRESHOLD", "0.97"))
+
 
 def ensure_directories() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

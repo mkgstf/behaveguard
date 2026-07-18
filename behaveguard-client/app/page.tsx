@@ -1,12 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AuthMode, Screen, SessionData, KeyEvent, DotTrial, DragTrial, TrackTrial, Profile } from "@/lib/types";
 import { usePassiveMouseCollector } from "@/lib/usePassiveMouse";
 import { api, EnrollmentResult, VerificationResult } from "@/lib/api";
 import { computeKeyboardExtras } from "@/lib/kinematics";
+import { useAuth } from "@/lib/auth";
 import StageRail from "@/components/StageRail";
 import Landing from "@/components/Landing";
+import Login from "@/components/Login";
+import Register from "@/components/Register";
+import ClaimProfile from "@/components/ClaimProfile";
+import CreateProfile from "@/components/CreateProfile";
 import Consent from "@/components/Consent";
 import KeyboardTest from "@/components/KeyboardTest";
 import MouseDotTask from "@/components/MouseDotTask";
@@ -16,10 +21,19 @@ import ProfileSetup from "@/components/ProfileSetup";
 import BehaviorResult from "@/components/BehaviorResult";
 import AdminDashboard from "@/components/AdminDashboard";
 
+// Screens not present in lib/types.ts's Screen union yet — extending inline
+// keeps this additive rather than requiring every existing screen name to
+// be touched.
+type ExtendedScreen = Screen | "login" | "register" | "claim" | "create-profile";
+
 export default function Home() {
-  const [screen, setScreen] = useState<Screen>("landing");
+  const { user, loading: authLoading } = useAuth();
+  const isAdmin = user?.role === "org_admin" || user?.role === "platform_admin";
+
+  const [screen, setScreen] = useState<ExtendedScreen>("landing");
   const [mode, setMode] = useState<AuthMode>("identify");
   const [selected, setSelected] = useState<Profile[]>([]);
+  const [myProfile, setMyProfile] = useState<Profile | null>(null);
   const [result, setResult] = useState<EnrollmentResult | VerificationResult | null>(null);
   const [submitError, setSubmitError] = useState("");
   const passivePointsRef = usePassiveMouseCollector();
@@ -29,9 +43,48 @@ export default function Home() {
   const trackTrials = useRef<TrackTrial[]>([]);
   const dragTrials = useRef<DragTrial[]>([]);
 
+  // Resolve the caller's own profile (if any) whenever they're logged in —
+  // this drives whether Landing offers "enroll" (first time) or "verify
+  // myself" (already enrolled), matching the one-profile-per-account model.
+  useEffect(() => {
+    Promise.resolve(user ? api.profiles().then((rows) => rows.find((p) => p.id === user.id) || null) : null)
+      .then(setMyProfile)
+      .catch(() => setMyProfile(null));
+  }, [user]);
+
+  // Once login/registration succeeds, drop back to the landing screen
+  // rather than leaving the person stranded on the login/register form.
+  useEffect(() => {
+    if (!(user && (screen === "login" || screen === "register"))) return;
+    Promise.resolve().then(() => setScreen("landing"));
+  }, [user, screen]);
+
   function reset() { setScreen("landing"); setResult(null); setSelected([]); setSubmitError(""); passivePointsRef.current = []; }
-  function begin(kind: "enroll" | "identify") { setMode(kind); setScreen("setup"); }
-  function ready(profiles: Profile[]) { setSelected(profiles); setMode(mode === "enroll" ? "enroll" : profiles.length === 1 ? "verify" : "identify"); sessionStart.current = performance.now(); setScreen("consent"); }
+
+  function beginEnroll() {
+    if (myProfile) { setMode("enroll"); setSelected([myProfile]); sessionStart.current = performance.now(); setScreen("consent"); }
+    else setScreen("create-profile");
+  }
+  function beginVerifySelf() {
+    if (!myProfile) { setScreen("create-profile"); return; }
+    setMode("verify"); setSelected([myProfile]); sessionStart.current = performance.now(); setScreen("consent");
+  }
+  function beginIdentify() { setMode("identify"); setScreen("setup"); }
+
+  function onProfileCreated(profile: Profile) {
+    setMyProfile(profile);
+    setMode("enroll");
+    setSelected([profile]);
+    sessionStart.current = performance.now();
+    setScreen("consent");
+  }
+
+  function ready(profiles: Profile[]) {
+    setSelected(profiles);
+    setMode(profiles.length === 1 ? "verify" : "identify");
+    sessionStart.current = performance.now();
+    setScreen("consent");
+  }
 
   function buildSession(): SessionData {
     const events = keyboardData.current.events;
@@ -46,18 +99,45 @@ export default function Home() {
   async function submit(data: SessionData) {
     try {
       const response = mode === "enroll" ? await api.enroll(selected[0].id, data) : mode === "verify" ? await api.verify(selected[0].id, data) : await api.identify(selected.map((profile) => profile.id), data);
+      if ("profile" in response) setMyProfile(response.profile);
       setResult(response); setScreen("result");
     } catch (error) { setSubmitError(error instanceof Error ? error.message : "Submission failed"); }
   }
 
-  if (screen === "admin") return <AdminDashboard onBack={reset} />;
-  if (screen === "setup") return <ProfileSetup kind={mode === "enroll" ? "enroll" : "identify"} onReady={ready} onBack={reset} />;
+  if (authLoading) {
+    return <div className="flex-1 flex items-center justify-center text-muted text-sm">loading…</div>;
+  }
+  if (screen === "login") return <Login onSwitchToRegister={() => setScreen("register")} onBack={reset} />;
+  if (screen === "register") return <Register onSwitchToLogin={() => setScreen("login")} onBack={reset} />;
+  if (screen === "claim" && user) return <ClaimProfile onClaimed={(profile) => { setMyProfile(profile); setScreen("landing"); }} onBack={reset} />;
+  if (screen === "create-profile" && user) return <CreateProfile onCreated={onProfileCreated} onBack={reset} />;
+  if (screen === "admin") {
+    if (!isAdmin) return <AccessDenied onBack={reset} />;
+    return <AdminDashboard onBack={reset} />;
+  }
+  if (screen === "setup") {
+    if (!user) return <Login onSwitchToRegister={() => setScreen("register")} onBack={reset} />;
+    if (mode === "identify" && !isAdmin) return <AccessDenied onBack={reset} />;
+    return <ProfileSetup kind={mode === "enroll" ? "enroll" : "identify"} onReady={ready} onBack={reset} />;
+  }
   if (screen === "result" && result) return <BehaviorResult result={result} onHome={reset} />;
+
   const showRail = !["landing", "done", "setup", "admin", "result"].includes(screen);
   const quickVerification = mode !== "enroll";
   return <div className="flex flex-col min-h-screen">
-    {showRail && <StageRail current={screen} />}
-    {screen === "landing" && <Landing onEnroll={() => begin("enroll")} onIdentify={() => begin("identify")} onAdmin={() => setScreen("admin")} />}
+    {showRail && <StageRail current={screen as Screen} />}
+    {screen === "landing" && (
+      <Landing
+        onEnroll={beginEnroll}
+        onVerifySelf={beginVerifySelf}
+        onIdentify={beginIdentify}
+        onAdmin={() => setScreen("admin")}
+        onLogin={() => setScreen("login")}
+        onRegister={() => setScreen("register")}
+        onClaim={() => setScreen("claim")}
+        hasOwnProfile={Boolean(myProfile)}
+      />
+    )}
     {screen === "consent" && <Consent onAgree={() => setScreen("keyboard")} />}
     {screen === "keyboard" && <KeyboardTest segmentSeconds={quickVerification ? 30 : 90} onComplete={(events, pangramLen, freeLen) => { keyboardData.current = { events, pangramLen, freeLen }; setScreen("mouse-dot"); }} />}
     {screen === "mouse-dot" && <MouseDotTask targetCount={quickVerification ? 10 : 25} onComplete={(trials) => { dotTrials.current = trials; setScreen("mouse-track"); }} />}
@@ -65,4 +145,16 @@ export default function Home() {
     {screen === "mouse-drag" && <MouseDragTask dragCount={quickVerification ? 5 : 10} onComplete={(trials) => { dragTrials.current = trials; void submit(buildSession()); }} />}
     {submitError && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-danger text-white rounded-lg px-5 py-3 text-sm shadow-xl">{submitError} <button onClick={() => void submit(buildSession())} className="underline ml-3">retry</button></div>}
   </div>;
+}
+
+function AccessDenied({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex-1 flex items-center justify-center px-6">
+      <div className="max-w-sm text-center fade-up">
+        <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-danger mb-3">access denied</div>
+        <p className="text-sm text-muted mb-6">This area requires an admin account.</p>
+        <button onClick={onBack} className="bg-text text-bg rounded-lg px-6 py-3 font-mono-tight text-xs uppercase tracking-widest">back home</button>
+      </div>
+    </div>
+  );
 }

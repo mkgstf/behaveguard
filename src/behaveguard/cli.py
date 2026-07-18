@@ -4,8 +4,12 @@ import typer
 import uvicorn
 
 from .api import app as api_app
-from .database import create_claim_token, get_profile_by_label, init_db, merge_profiles, promote_user_role
+from .database import (
+    create_claim_token, get_profile_by_label, init_db, list_merge_events, merge_profiles,
+    promote_user_role, revert_merge_event,
+)
 from .importer import import_xlsx
+from .merging import scan_and_auto_merge
 from .modeling import model_status, retrain_model
 from .training import train_neural
 from .experiments import run_experiments
@@ -118,3 +122,32 @@ def generate_claim_token(profile_label: str) -> None:
         raise typer.Exit(1)
     typer.echo(f"Claim token for '{profile_label}' (send this to its real owner):")
     typer.echo(token)
+
+
+@app.command("auto-merge-scan")
+def auto_merge_scan_command(threshold: float = typer.Option(None, help="Override the default similarity threshold")) -> None:
+    """Scan all active profiles for likely duplicates and merge them
+    immediately (no per-merge approval — see merging.py's docstring for why
+    that's an acceptable default). Every merge is recorded and reversible
+    via `revert-merge`."""
+    init_db()
+    kwargs = {} if threshold is None else {"threshold": threshold}
+    result = scan_and_auto_merge(**kwargs)
+    typer.echo(result)
+
+
+@app.command("revert-merge")
+def revert_merge_command(event_id: str) -> None:
+    """Undo an automatic merge by its MergeEvent id (see `auto-merge-scan`
+    output, or GET /api/v1/admin/merge/events)."""
+    init_db()
+    try:
+        result = revert_merge_event(event_id)
+    except KeyError:
+        typer.echo(f"No merge event found with id {event_id!r}.")
+        raise typer.Exit(1)
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(1)
+    typer.echo(result)
+    typer.echo({"classical": retrain_model()})
