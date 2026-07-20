@@ -13,10 +13,12 @@ from .db.engine import engine, session_scope
 from .db.models import (
     Base,
     MergeEvent,
+    ModelVersion,
     Profile,
     ProfileClaimToken,
     RefreshToken,
     ReviewSample,
+    SecurityAlert,
     Session as SessionRow,
     User,
     VerificationEvent,
@@ -737,3 +739,139 @@ def revert_merge_event(event_id: str) -> dict[str, Any]:
         event.status = "reverted"
         event.reverted_at = datetime.now(UTC)
     return get_merge_event(event_id)
+
+
+# --- Phase 3: model version registry ----------------------------------------
+
+
+def _model_version_dict(row: ModelVersion) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "artifact_uri": row.artifact_uri,
+        "config_fingerprint": row.config_fingerprint,
+        "dataset_fingerprint": row.dataset_fingerprint,
+        "metrics": row.metrics,
+        "status": row.status,
+        "created_at": _iso(row.created_at),
+        "promoted_at": _iso(row.promoted_at),
+    }
+
+
+def create_model_version(
+    kind: str,
+    artifact_uri: str | None,
+    metrics: dict[str, Any] | None,
+    status: str = "candidate",
+    config_fingerprint: str | None = None,
+    dataset_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    version_id = str(uuid.uuid4())
+    with session_scope() as session:
+        session.add(
+            ModelVersion(
+                id=version_id, kind=kind, artifact_uri=artifact_uri, metrics=metrics, status=status,
+                config_fingerprint=config_fingerprint, dataset_fingerprint=dataset_fingerprint,
+                promoted_at=datetime.now(UTC) if status == "active" else None,
+            )
+        )
+    return get_model_version(version_id)
+
+
+def get_model_version(version_id: str) -> dict[str, Any]:
+    with session_scope() as session:
+        row = session.get(ModelVersion, version_id)
+        if row is None:
+            raise KeyError(version_id)
+        return _model_version_dict(row)
+
+
+def get_active_model_version(kind: str) -> dict[str, Any] | None:
+    with session_scope() as session:
+        row = session.execute(
+            select(ModelVersion)
+            .where(ModelVersion.kind == kind, ModelVersion.status == "active")
+            .order_by(ModelVersion.promoted_at.desc())
+        ).scalars().first()
+        return _model_version_dict(row) if row else None
+
+
+def promote_model_version(version_id: str) -> dict[str, Any]:
+    """Marks `version_id` active and retires any other active version of the
+    same kind — there is at most one active version per model kind."""
+    with session_scope() as session:
+        row = session.get(ModelVersion, version_id)
+        if row is None:
+            raise KeyError(version_id)
+        session.execute(
+            update(ModelVersion)
+            .where(ModelVersion.kind == row.kind, ModelVersion.status == "active")
+            .values(status="retired")
+        )
+        row.status = "active"
+        row.promoted_at = datetime.now(UTC)
+    return get_model_version(version_id)
+
+
+def list_model_versions(kind: str | None = None) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        query = select(ModelVersion).order_by(ModelVersion.created_at.desc())
+        if kind is not None:
+            query = query.where(ModelVersion.kind == kind)
+        return [_model_version_dict(row) for row in session.execute(query).scalars().all()]
+
+
+# --- Phase 4: security alerts ------------------------------------------------
+
+
+def _security_alert_dict(row: SecurityAlert) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "profile_id": row.profile_id,
+        "kind": row.kind,
+        "severity": row.severity,
+        "details": row.details,
+        "status": row.status,
+        "created_at": _iso(row.created_at),
+    }
+
+
+def create_security_alert(
+    kind: str, severity: str, details: dict[str, Any], profile_id: str | None = None
+) -> dict[str, Any]:
+    alert_id = str(uuid.uuid4())
+    with session_scope() as session:
+        session.add(
+            SecurityAlert(id=alert_id, profile_id=profile_id, kind=kind, severity=severity, details=details)
+        )
+    return get_security_alert(alert_id)
+
+
+def get_security_alert(alert_id: str) -> dict[str, Any]:
+    with session_scope() as session:
+        row = session.get(SecurityAlert, alert_id)
+        if row is None:
+            raise KeyError(alert_id)
+        return _security_alert_dict(row)
+
+
+def list_security_alerts(statuses: tuple[str, ...] = ("open",)) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        query = (
+            select(SecurityAlert)
+            .where(SecurityAlert.status.in_(statuses))
+            .order_by(SecurityAlert.created_at.desc())
+        )
+        return [_security_alert_dict(row) for row in session.execute(query).scalars().all()]
+
+
+def update_security_alert_status(alert_id: str, status: str) -> dict[str, Any]:
+    if status not in ("open", "ack", "dismissed"):
+        raise ValueError(f"Invalid status: {status}")
+    with session_scope() as session:
+        result = session.execute(
+            update(SecurityAlert).where(SecurityAlert.id == alert_id).values(status=status)
+        )
+        if result.rowcount == 0:
+            raise KeyError(alert_id)
+    return get_security_alert(alert_id)

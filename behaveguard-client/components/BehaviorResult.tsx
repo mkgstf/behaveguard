@@ -13,7 +13,7 @@ export default function BehaviorResult({ result, onHome }: { result: EnrollmentR
           <Stat label="SVM" value={result.training.svm_trained ? "trained" : "waiting"} />
         </div>
         <p className="text-sm text-muted bg-surface border border-border rounded-lg p-4">
-          The profile centroid and saved model were retrained. {result.neural.trained ? `The BiLSTM + TCN model also trained (loss ${result.neural.loss}).` : result.neural.reason}
+          The profile centroid and saved model were retrained. The neural fusion model&apos;s retrain has been queued and runs in the background — an admin can check its outcome from the dashboard.
         </p>
       </Shell>
     );

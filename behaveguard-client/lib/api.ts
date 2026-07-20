@@ -50,6 +50,9 @@ export const api = {
   mergeScan: () => request<MergeScanResult>("/admin/merge/scan", { method: "POST" }),
   mergeEvents: () => request<MergeEvent[]>("/admin/merge/events"),
   revertMerge: (eventId: string) => request<MergeEvent>(`/admin/merge/${eventId}/revert`, { method: "POST" }),
+  jobs: () => request<JobStatus[]>("/admin/jobs"),
+  securityAlerts: (status: string = "open") => request<SecurityAlert[]>(`/admin/security-alerts?status=${encodeURIComponent(status)}`),
+  updateSecurityAlert: (id: string, status: "ack" | "dismissed") => request<SecurityAlert>(`/admin/security-alerts/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
 };
 
 export interface CandidateResult {
@@ -84,7 +87,10 @@ export interface EnrollmentResult {
   session_id: string;
   profile: Profile;
   training: { session_count: number; profile_count: number; svm_trained: boolean; version?: string };
-  neural: { trained: boolean; reason?: string; loss?: number; epochs?: number };
+  // Phase 3: the neural fusion retrain no longer blocks the enroll response —
+  // it's queued for the background worker instead. Look this id up via
+  // GET /admin/jobs (or JobStatus) to see when it's actually done.
+  neural_retrain_job_id: string;
 }
 
 export interface AdminAnalytics {
@@ -175,8 +181,31 @@ export interface ReviewComparison {
 
 export interface RetrainingResult {
   classical: { version?: string; session_count: number; profile_count: number; svm_trained: boolean };
-  neural: { trained: boolean; reason?: string; loss?: number; epochs?: number };
+  neural_retrain_job_id: string;
   included_review_samples: number;
+}
+
+export interface JobStatus {
+  job_id: string;
+  type: string;
+  reason: string;
+  status: "queued" | "running" | "done" | "failed";
+  queued_at?: string;
+  running_at?: string;
+  done_at?: string;
+  failed_at?: string;
+  result?: { trained: boolean; promoted?: boolean; holdout_accuracy?: number | null; reason?: string };
+  error?: string;
+}
+
+export interface SecurityAlert {
+  id: string;
+  profile_id: string | null;
+  kind: "replay_suspected" | "far_spike" | "brute_force";
+  severity: string;
+  details: Record<string, unknown>;
+  status: "open" | "ack" | "dismissed";
+  created_at: string;
 }
 
 export interface ProfileCharacterCard {

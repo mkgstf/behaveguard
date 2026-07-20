@@ -14,6 +14,7 @@ from .modeling import model_status, retrain_model
 from .training import train_neural
 from .experiments import run_experiments
 from .personal_verifier import train_personal_verifier
+from .worker import run_worker
 
 app = typer.Typer(help="BehaveGuard administration and ML pipeline")
 
@@ -151,3 +152,19 @@ def revert_merge_command(event_id: str) -> None:
         raise typer.Exit(1)
     typer.echo(result)
     typer.echo({"classical": retrain_model()})
+
+
+@app.command("worker")
+def worker_command(
+    consumer_name: str = typer.Option(None, help="Consumer identity within the retrain_workers group (defaults to hostname-based)"),
+) -> None:
+    """Run the retrain-job worker as a standalone, blocking process.
+
+    Not required for local dev — `behaveguard serve` already runs this same
+    loop as a background thread automatically. This command exists for the
+    deployment shape where the worker runs as its own independent
+    service/container instead (see worker.py's docstring), and for anyone
+    who wants to run it separately locally too (e.g. to watch its logs on
+    their own, or restart it independently of the API process).
+    """
+    run_worker(consumer_name=consumer_name)

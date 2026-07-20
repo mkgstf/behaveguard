@@ -65,6 +65,7 @@ def test_confident_self_verification_auto_enrolls(monkeypatch):
             "best": {"profile_id": profile_id, "similarity": 95.0, "certainty": 99.0},
             "candidates": [{"profile_id": profile_id, "similarity": 95.0, "certainty": 99.0}],
             "margin": 0.0,
+            "threshold": 62.0,
             "features": features,
         }
 
@@ -91,6 +92,7 @@ def test_low_confidence_verification_does_not_auto_enroll(monkeypatch):
             "best": {"profile_id": profile_id, "similarity": 70.0, "certainty": 80.0},
             "candidates": [{"profile_id": profile_id, "similarity": 70.0, "certainty": 80.0}],
             "margin": 0.0,
+            "threshold": 62.0,
             "features": features,
         }
 

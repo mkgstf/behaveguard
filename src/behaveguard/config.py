@@ -69,6 +69,22 @@ AUTO_ENROLLMENT_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_ENROLLMENT_SIMILARI
 # merge is much costlier than a missed one.
 AUTO_MERGE_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_MERGE_SIMILARITY_THRESHOLD", "0.97"))
 
+# --- Phase 3: async retraining ----------------------------------------------
+
+RETRAIN_STREAM_KEY = os.getenv("RETRAIN_STREAM_KEY", "behaveguard:retrain_jobs")
+RETRAIN_CONSUMER_GROUP = os.getenv("RETRAIN_CONSUMER_GROUP", "retrain_workers")
+# How long a job can sit claimed-but-unacknowledged (e.g. a worker crashed
+# mid-job) before another worker is allowed to reclaim and retry it.
+RETRAIN_JOB_CLAIM_TIMEOUT_MS = int(os.getenv("RETRAIN_JOB_CLAIM_TIMEOUT_MS", "60000"))
+NEURAL_RETRAIN_EPOCHS = int(os.getenv("NEURAL_RETRAIN_EPOCHS", "20"))
+
+# --- Phase 4: rate limiting & replay detection ------------------------------
+
+RATE_LIMIT_LOGIN_PER_MINUTE = int(os.getenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5"))
+RATE_LIMIT_VERIFY_PER_MINUTE = int(os.getenv("RATE_LIMIT_VERIFY_PER_MINUTE", "5"))
+# TTL for the per-profile "seen payload hashes" set used for replay detection.
+REPLAY_DETECTION_TTL_SECONDS = int(os.getenv("REPLAY_DETECTION_TTL_SECONDS", str(24 * 3600)))
+
 
 def ensure_directories() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

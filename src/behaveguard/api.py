@@ -27,15 +27,18 @@ from .database import (
     add_session, claim_profile, create_profile, delete_profile,
     get_active_refresh_token, get_profile, get_profile_by_user, get_review_sample_material,
     get_user_by_oauth, get_user_credentials_by_email, init_db, link_oauth_identity, list_merge_events,
-    list_profiles, list_review_samples, log_verification, profile_sessions, mark_approved_samples_trained,
-    promote_review_sample, reject_review_sample, revert_merge_event, revoke_refresh_token, review_sample_counts,
-    set_blacklist, store_refresh_token, submit_review_feedback, verification_count,
+    list_model_versions, list_profiles, list_review_samples, list_security_alerts, log_verification,
+    profile_sessions, mark_approved_samples_trained, promote_review_sample, reject_review_sample,
+    revert_merge_event, revoke_refresh_token, review_sample_counts, set_blacklist, store_refresh_token,
+    submit_review_feedback, update_security_alert_status, verification_count,
 )
 from .database import create_user as db_create_user
 from .features import extract_features
+from .jobs import enqueue_retrain_neural, list_recent_job_statuses
+from .security import check_replay, rate_limit_login, rate_limit_verify, track_verification_score
+from .worker import run_worker_in_background_thread
 from .merging import scan_and_auto_merge
 from .modeling import compare_detail, model_status, retrain_model, score_session
-from .training import train_neural
 from .profile_analytics import build_character_cards, compare_probe_to_profile
 
 
@@ -83,6 +86,10 @@ class ClaimRequest(BaseModel):
     token: str
 
 
+class SecurityAlertAction(BaseModel):
+    status: Literal["ack", "dismissed"]
+
+
 app = FastAPI(title="BehaveGuard API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -97,6 +104,11 @@ app.add_middleware(
 def startup() -> None:
     init_db()
     retrain_model()
+    # Local-dev convenience: runs the retrain-job worker as a background
+    # thread inside this same process, so `uv run behaveguard serve` alone
+    # is enough — see worker.py's docstring for why the deployment phase
+    # will split this into its own service instead.
+    run_worker_in_background_thread()
 
 
 @app.get("/api/v1/health")
@@ -112,10 +124,11 @@ def _issue_token_pair(user: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/api/v1/auth/register", status_code=201)
-def register(request: RegisterRequest) -> dict:
+def register(request: RegisterRequest, http_request: Request) -> dict:
     """Self-service only — every account is created this way (or via Google
     login below), always as role='user'. There is no admin-creates-user
     route anywhere in this API."""
+    rate_limit_login(http_request)
     try:
         user = db_create_user(request.email, password_hash=hash_password(request.password))
     except IntegrityError as error:
@@ -124,7 +137,8 @@ def register(request: RegisterRequest) -> dict:
 
 
 @app.post("/api/v1/auth/login")
-def login(request: LoginRequest) -> dict:
+def login(request: LoginRequest, http_request: Request) -> dict:
+    rate_limit_login(http_request)
     found = get_user_credentials_by_email(request.email)
     if found is None:
         raise HTTPException(401, "Invalid email or password")
@@ -276,13 +290,18 @@ def enroll(profile_id: str, request: SessionRequest, current_user: CurrentUser =
         raise HTTPException(403, "Blacklisted profiles cannot be enrolled")
     features = extract_features(request.session)
     session_id = add_session(profile_id, request.session, features)
+    # Classical retrain (RobustScaler + centroid + SVM) is cheap numpy work —
+    # kept inline so the caller's own next verification is scored against an
+    # up-to-date model immediately. The neural fusion model's retrain is the
+    # slow part (real PyTorch training epochs); that's queued for the
+    # background worker instead of blocking this response — see worker.py.
     training = retrain_model()
-    neural = train_neural(epochs=20)
-    return {"session_id": session_id, "profile": get_profile(profile_id), "training": training, "neural": neural}
+    job_id = enqueue_retrain_neural(reason=f"enroll:{profile_id}")
+    return {"session_id": session_id, "profile": get_profile(profile_id), "training": training, "neural_retrain_job_id": job_id}
 
 
 @app.post("/api/v1/verify/{profile_id}")
-def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+def verify(profile_id: str, request: SessionRequest, http_request: Request, current_user: CurrentUser = Depends(get_current_user)) -> dict:
     """Phase 2: no review-queue quarantine. Login already answers "who is
     this" for a 1:1 self-check, so there's nothing left for a human reviewer
     to confirm. `verification_events` still logs every attempt for audit
@@ -293,32 +312,39 @@ def verify(profile_id: str, request: SessionRequest, current_user: CurrentUser =
     above the accept threshold) plays the role the human reviewer used to
     play, and is what makes "the profile keeps improving on its own every
     time you verify" safe rather than an open door for drift.
-    """
-    try:
-        profile = _require_profile_access(profile_id, current_user)
-        if profile["blacklisted"]:
-            raise HTTPException(403, "Profile is blacklisted")
-        result = score_session(request.session, [profile_id])
-        result["best"]["label"] = profile["label"]
-        features = result.pop("features")
-        result["detail"] = compare_detail(profile_id, features)
-        log_verification("1to1", profile_id, [profile_id], result)
 
-        auto_enrolled = False
-        if (
-            result.get("match")
-            and profile["user_id"] == current_user.id
-            and result["best"]["similarity"] >= AUTO_ENROLLMENT_SIMILARITY_THRESHOLD
-        ):
-            add_session(profile_id, request.session, features, purpose="auto_reenrollment")
-            retrain_model()
-            auto_enrolled = True
-        result["auto_enrolled"] = auto_enrolled
-        return result
-    except KeyError as error:
-        raise HTTPException(404, "Profile not found") from error
+    Phase 4: rate-limited per profile, checked for exact-payload replay, and
+    each score is tracked for a "hovering just under the threshold"
+    near-miss pattern — all three raise passive `security_alerts` rows for
+    an admin to look at rather than blocking the request itself.
+    """
+    rate_limit_verify(http_request, profile_id)
+    profile = _require_profile_access(profile_id, current_user)
+    if profile["blacklisted"]:
+        raise HTTPException(403, "Profile is blacklisted")
+    check_replay(profile_id, request.session)
+    try:
+        result = score_session(request.session, [profile_id])
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    result["best"]["label"] = profile["label"]
+    features = result.pop("features")
+    result["detail"] = compare_detail(profile_id, features)
+    log_verification("1to1", profile_id, [profile_id], result)
+    track_verification_score(profile_id, result["best"]["similarity"], result["threshold"])
+
+    auto_enrolled = False
+    if (
+        result.get("match")
+        and profile["user_id"] == current_user.id
+        and result["best"]["similarity"] >= AUTO_ENROLLMENT_SIMILARITY_THRESHOLD
+    ):
+        add_session(profile_id, request.session, features, purpose="auto_reenrollment")
+        retrain_model()
+        enqueue_retrain_neural(reason=f"auto_reenroll:{profile_id}")
+        auto_enrolled = True
+    result["auto_enrolled"] = auto_enrolled
+    return result
 
 
 @app.post("/api/v1/identify")
@@ -440,9 +466,39 @@ def review_sample(review_id: str, request: ReviewAction, current_user: CurrentUs
 @app.post("/api/v1/admin/retrain")
 def retrain(current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     classical = retrain_model()
-    neural = train_neural(epochs=20)
+    job_id = enqueue_retrain_neural(reason="admin_retrain")
     included_review_samples = mark_approved_samples_trained()
-    return {"classical": classical, "neural": neural, "included_review_samples": included_review_samples}
+    return {"classical": classical, "neural_retrain_job_id": job_id, "included_review_samples": included_review_samples}
+
+
+@app.get("/api/v1/admin/jobs")
+def jobs_status(current_user: CurrentUser = Depends(require_platform_admin)) -> list[dict]:
+    return list_recent_job_statuses()
+
+
+@app.get("/api/v1/admin/model-versions")
+def model_versions(kind: str | None = Query(None), current_user: CurrentUser = Depends(require_platform_admin)) -> list[dict]:
+    return list_model_versions(kind)
+
+
+@app.get("/api/v1/admin/security-alerts")
+def security_alerts(
+    status: str = Query("open"), current_user: CurrentUser = Depends(require_platform_admin)
+) -> list[dict]:
+    statuses = ("open", "ack", "dismissed") if status == "all" else (status,)
+    return list_security_alerts(statuses)
+
+
+@app.patch("/api/v1/admin/security-alerts/{alert_id}")
+def update_security_alert(
+    alert_id: str, request: SecurityAlertAction, current_user: CurrentUser = Depends(require_platform_admin)
+) -> dict:
+    try:
+        return update_security_alert_status(alert_id, request.status)
+    except KeyError as error:
+        raise HTTPException(404, "Security alert not found") from error
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
 
 
 @app.post("/api/v1/admin/merge/scan")

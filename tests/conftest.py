@@ -6,6 +6,7 @@ from sqlalchemy import text
 from behaveguard import database
 from behaveguard.db.engine import engine
 from behaveguard.db.models import Base
+from behaveguard.redis_client import get_redis
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -29,4 +30,16 @@ def _clean_tables():
     with engine.begin() as connection:
         table_names = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
         connection.execute(text(f"TRUNCATE {table_names} RESTART IDENTITY CASCADE"))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_redis():
+    """Flushes Redis before each test — rate-limit counters, replay-detection
+    sets, and job-queue state (Phase 3/4) all live in Redis and would
+    otherwise leak between tests the same way stale Postgres rows would.
+    Uses the same `REDIS_URL` as the app (see docker-compose.yml); assumes a
+    dedicated/local Redis instance, same assumption as the Postgres fixture
+    above."""
+    get_redis().flushall()
     yield

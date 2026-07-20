@@ -175,6 +175,32 @@ class MergeEvent(Base):
     )
 
 
+class SecurityAlert(Base):
+    """Passive, exception-based signals for an admin to look at — replaces
+    reviewing every verification with a short list of things that actually
+    look anomalous. Never blocks the request that triggered it."""
+
+    __tablename__ = "security_alerts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    profile_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="low")
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('replay_suspected','far_spike','brute_force')", name="ck_security_alerts_kind"
+        ),
+        CheckConstraint("status IN ('open','ack','dismissed')", name="ck_security_alerts_status"),
+        Index("idx_security_alerts_status", "status", "created_at"),
+    )
+
+
 class Session(Base):
     """One recorded behavioral session: raw payload + derived features.
 

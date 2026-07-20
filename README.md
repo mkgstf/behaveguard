@@ -102,6 +102,26 @@ The frontend now has a full login/register flow, Google sign-in, and a "claim a 
 - **Duplicate profiles are merged automatically**, not via a human-reviewed queue. `uv run behaveguard auto-merge-scan` (or `POST /api/v1/admin/merge/scan`) compares every active profile's centroid and merges anything above `AUTO_MERGE_SIMILARITY_THRESHOLD` (default 0.97, conservative on purpose). Every merge is logged as a reversible `MergeEvent` — undo one with `uv run behaveguard revert-merge <event_id>` or `POST /api/v1/admin/merge/{id}/revert`.
 - The old `review_samples` quarantine table/endpoints are untouched in the schema (so historical data isn't lost) but nothing new is written to them by `/verify` or `/identify` anymore.
 
+## 5. What changed in Phase 3 (async retraining) + Phase 4 (rate limiting & security alerts)
+
+**Async neural retraining.** The classical model (RobustScaler + centroid + SVM) is still refit inline on every enroll/verify/merge — it's cheap numpy work, and keeping it synchronous means your very next verification is scored against an up-to-date model immediately. The **neural fusion model** (real PyTorch training epochs, the actually slow part) is no longer trained inline:
+
+- `enroll`, a confident auto-enrollment inside `verify`, `POST /admin/retrain`, and the auto-merge scan all now call `enqueue_retrain_neural(...)` instead of `train_neural(...)` directly — this appends a job to a Redis Stream and returns immediately. The response includes a `neural_retrain_job_id` instead of an inline training result.
+- A **worker** consumes that stream and does the actual training. Locally, `uv run behaveguard serve` starts this worker automatically as a background thread — no second terminal needed. This is a deliberate local-dev shortcut; the eventual cloud deployment splits the worker into its own independent service/container (`uv run behaveguard worker`, already available standalone for exactly this) so the API and worker can scale and restart independently.
+- **Promotion gate**: the worker doesn't blindly overwrite the live model. It trains a candidate on a held-out split (most recent session held out per profile with ≥3 sessions), evaluates it, and only promotes it over the currently active model (tracked in the `model_versions` table) if it's at least as good on held-out accuracy. A worse candidate is kept as `status='candidate'` — visible via `GET /api/v1/admin/model-versions` — rather than silently discarded or silently replacing a working model.
+- `GET /api/v1/admin/jobs` shows recent job statuses (queued/running/done/failed) from the admin dashboard's new "Jobs & Security" panel.
+- If a worker crashes mid-job, the unacknowledged job is automatically reclaimed by the next poll (Redis Streams' `XAUTOCLAIM`) rather than being silently lost.
+
+**Rate limiting & passive security signals.** All Redis-backed, all per-minute/IP or per-minute/profile fixed windows:
+
+- `/auth/login` and `/auth/register` are limited to `RATE_LIMIT_LOGIN_PER_MINUTE` (default 5) attempts per IP per minute; `/verify/{profile_id}` to `RATE_LIMIT_VERIFY_PER_MINUTE` (default 5) attempts per profile per minute. Exceeding either returns `429`.
+- Nothing else blocks a request — the following are **passive** signals only, written to the `security_alerts` table and surfaced on the admin dashboard for a human to look at, never blocking the triggering request itself:
+  - **`brute_force`** — raised once a key gets rate-limit-blocked 3 times within an hour (deduped, so it doesn't spam one alert per blocked request).
+  - **`replay_suspected`** — raised when a verification submits the exact same raw payload (hashed) as a previous submission for that profile — a live person doesn't type/move identically twice.
+  - **`far_spike`** — raised when several recent verification attempts for a profile cluster just under the accept threshold, a pattern consistent with probing for the boundary rather than natural variation.
+- `GET /api/v1/admin/security-alerts` (optionally `?status=open|ack|dismissed|all`) and `PATCH /api/v1/admin/security-alerts/{id}` (`{"status": "ack"}` or `{"status": "dismissed"}`) manage them.
+
+New env vars (see `config.py` for defaults): `RATE_LIMIT_LOGIN_PER_MINUTE`, `RATE_LIMIT_VERIFY_PER_MINUTE`, `REPLAY_DETECTION_TTL_SECONDS`, `RETRAIN_JOB_CLAIM_TIMEOUT_MS`, `NEURAL_RETRAIN_EPOCHS`.
 
 ## Temporary laptop hosting with Cloudflare Tunnel
 
