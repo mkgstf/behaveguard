@@ -34,6 +34,13 @@
   box-sizing: border-box;
 }
 
+html {
+  /* Overall type-scale bump (spec item 8) — every rem-based Tailwind class
+     (text-sm, text-xs, etc.) scales up slightly from this base instead of
+     each component being touched individually. */
+  font-size: 17px;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -42,6 +49,16 @@ body {
     radial-gradient(circle at 50% 0%, rgba(94, 224, 196, 0.05), transparent 45%),
     radial-gradient(circle at 100% 100%, rgba(242, 184, 75, 0.04), transparent 45%);
   background-attachment: fixed;
+}
+
+/* Cursor-pointer safety net (spec item 8): every clickable control gets a
+   pointer cursor, regardless of whether the component remembered to add
+   `cursor-pointer` itself. Genuinely disabled controls are excluded. */
+button:not(:disabled), [role="button"]:not([aria-disabled="true"]), a, summary {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
 }
 
 ::selection {

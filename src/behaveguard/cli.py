@@ -5,7 +5,7 @@ import uvicorn
 
 from .api import app as api_app
 from .database import (
-    create_claim_token, get_profile_by_label, init_db, list_merge_events, merge_profiles,
+    init_db, list_merge_events, merge_profiles,
     promote_user_role, revert_merge_event,
 )
 from .importer import import_xlsx
@@ -101,28 +101,6 @@ def promote_admin(
         typer.echo(str(error))
         raise typer.Exit(1)
     typer.echo({"email": user["email"], "role": user["role"]})
-
-
-@app.command("generate-claim-token")
-def generate_claim_token(profile_label: str) -> None:
-    """Generate a one-time link for the real owner of a pre-existing/legacy
-    profile (e.g. one created by `import-xlsx`) to connect it to their own
-    self-registered account. Send the printed token to that person yourself
-    (email, Slack, in person) — there is no automated delivery in Phase 1.
-    """
-    init_db()
-    try:
-        profile = get_profile_by_label(profile_label)
-    except KeyError:
-        typer.echo(f"No profile found with label {profile_label!r}.")
-        raise typer.Exit(1)
-    try:
-        token = create_claim_token(profile["id"])
-    except ValueError as error:
-        typer.echo(str(error))
-        raise typer.Exit(1)
-    typer.echo(f"Claim token for '{profile_label}' (send this to its real owner):")
-    typer.echo(token)
 
 
 @app.command("auto-merge-scan")

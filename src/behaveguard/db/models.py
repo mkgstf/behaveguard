@@ -97,7 +97,7 @@ class RefreshToken(Base):
 
 
 class ProfileClaimToken(Base):
-    """One-time link an operator generates (via the `generate-claim-token`
+    """One-time link an operator generates (via the admin dashboard's
     CLI command) to let the real owner of a pre-existing/legacy profile
     connect it to their own self-registered account. The account itself is
     always created by the person, through the normal register/Google flow —

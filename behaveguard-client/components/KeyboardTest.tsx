@@ -19,7 +19,17 @@ interface DialogueOption {
   line: string;
 }
 
-const DIALOGUES = rawDialogues as DialogueOption[];
+// Bug #17 fix: the source JSON has embedded "\n\n" line breaks inside the
+// dialogue text (paragraph breaks in the original quotes), but this segment
+// types into a single-line <input> — a plain <input> can never receive a
+// typed newline, so once the cursor reached an embedded break the text
+// became permanently unmatchable and the resync loop got stuck at that
+// exact character forever. Normalising whitespace once at load time (rather
+// than patching the matching logic) keeps the fix contained to the data.
+const DIALOGUES = (rawDialogues as DialogueOption[]).map((d) => ({
+  ...d,
+  line: d.line.replace(/\s*\n+\s*/g, " ").trim(),
+}));
 const CONSECUTIVE_ERROR_THRESHOLD = 5;
 const SYNC_PAUSE_MS = 1000;
 

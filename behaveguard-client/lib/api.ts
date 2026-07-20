@@ -34,7 +34,11 @@ async function request<T>(path: string, init?: RequestInit, retried = false): Pr
 }
 
 export const api = {
+  ping: () => request<{ status: string }>("/ping"),
+  health: () => request<{ status: string; model: unknown; redis: boolean }>("/health"),
   profiles: () => request<Profile[]>("/profiles?include_blacklisted=true"),
+  myStats: () => request<MyStats>("/profiles/me/stats"),
+  adminClaimToken: (profileId: string) => request<{ profile_id: string; token: string }>(`/admin/profiles/${profileId}/claim-token`, { method: "POST" }),
   createProfile: (label: string) => request<Profile>("/profiles", { method: "POST", body: JSON.stringify({ label }) }),
   claimProfile: (token: string) => request<Profile>("/profiles/claim", { method: "POST", body: JSON.stringify({ token }) }),
   blacklist: (id: string, blacklisted: boolean) => request<Profile>(`/profiles/${id}`, { method: "PATCH", body: JSON.stringify({ blacklisted }) }),
@@ -81,6 +85,37 @@ export interface VerificationResult {
   // self-check was folded into the profile's training data automatically.
   auto_enrolled?: boolean;
   detail?: { category: string; similarity: number; feature_count: number }[];
+  // Phase 4.5: post-verification UX context — aggregate counts only, never
+  // another profile's identity. `null` if the context computation failed;
+  // the verification itself never fails because of that.
+  context?: {
+    candidate_pool_size: number;
+    close_matches: number;
+    total_training_sessions: number;
+    own_enrollment_count: number;
+  } | null;
+}
+
+export interface SessionBehaviorMetrics {
+  wpm: number | null;
+  dwell_ms: number | null;
+  flight_ms: number | null;
+  iki_ms: number | null;
+  rhythm_cv: number | null;
+  backspace_rate: number | null;
+  mouse_speed_pxs: number | null;
+  click_error_px: number | null;
+  target_time_ms: number | null;
+  drag_duration_ms: number | null;
+  drag_success_rate: number | null;
+  tracking_error_px: number | null;
+  tremor_px: number | null;
+}
+
+export interface MyStats {
+  profile: Profile;
+  latest: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics) | null;
+  history: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics)[];
 }
 
 export interface EnrollmentResult {

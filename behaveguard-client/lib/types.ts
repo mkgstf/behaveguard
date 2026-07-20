@@ -17,6 +17,7 @@ export type AuthMode = "enroll" | "verify" | "identify";
 export interface Profile {
   id: string;
   label: string;
+  user_id: string | null;
   blacklisted: number;
   enrollment_count: number;
   created_at: string;

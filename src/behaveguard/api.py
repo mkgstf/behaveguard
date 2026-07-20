@@ -39,7 +39,8 @@ from .security import check_replay, rate_limit_login, rate_limit_verify, track_v
 from .worker import run_worker_in_background_thread
 from .merging import scan_and_auto_merge
 from .modeling import compare_detail, model_status, retrain_model, score_session
-from .profile_analytics import build_character_cards, compare_probe_to_profile
+from .profile_analytics import build_character_cards, compare_probe_to_profile, session_behavior_metrics
+from .database import create_claim_token
 
 
 class ProfileCreate(BaseModel):
@@ -111,9 +112,25 @@ def startup() -> None:
     run_worker_in_background_thread()
 
 
+@app.get("/api/v1/ping")
+def ping() -> dict:
+    """Absolute-minimum unauthenticated round-trip, deliberately separate
+    from /health: the bootloader's cold-start probe just needs to know the
+    process is up and accepting requests, not that the model/DB/Redis are
+    all warm too (that's what /health is for)."""
+    return {"status": "ok"}
+
+
 @app.get("/api/v1/health")
 def health() -> dict:
-    return {"status": "ok", "model": model_status()}
+    from .redis_client import get_redis
+
+    redis_ok = False
+    try:
+        redis_ok = bool(get_redis().ping())
+    except Exception:
+        redis_ok = False
+    return {"status": "ok", "model": model_status(), "redis": redis_ok}
 
 
 def _issue_token_pair(user: dict[str, Any]) -> dict[str, Any]:
@@ -254,6 +271,26 @@ def new_profile(request: ProfileCreate, current_user: CurrentUser = Depends(get_
         raise HTTPException(409, "A profile with this label already exists") from error
 
 
+@app.get("/api/v1/profiles/me/stats")
+def my_profile_stats(current_user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Self-service version of the admin-only per-profile stats route below —
+    scoped to the caller's own profile only, for the post-enrollment stats
+    view and the landing-page highlights strip. Reuses
+    profile_analytics.session_behavior_metrics (same function the admin
+    dashboard's character cards are built from) rather than adding a second
+    way to compute these numbers."""
+    profile = get_profile_by_user(current_user.id)
+    if profile is None:
+        raise HTTPException(404, "You do not have a profile yet")
+    sessions = profile_sessions(profile["id"])
+    history = [
+        {"session_id": row["id"], "collected_at": row["collected_at"], **session_behavior_metrics(row["payload"])}
+        for row in sessions
+    ]
+    latest = history[-1] if history else None
+    return {"profile": profile, "latest": latest, "history": history}
+
+
 @app.patch("/api/v1/profiles/{profile_id}")
 def update_profile(profile_id: str, request: ProfileUpdate, current_user: CurrentUser = Depends(require_admin)) -> dict:
     try:
@@ -344,6 +381,29 @@ def verify(profile_id: str, request: SessionRequest, http_request: Request, curr
         enqueue_retrain_neural(reason=f"auto_reenroll:{profile_id}")
         auto_enrolled = True
     result["auto_enrolled"] = auto_enrolled
+    # Phase 4.5: post-verification UX context. This is a second, separate
+    # scoring call purely for display — it never touches `result["match"]`,
+    # `margin`, or `auto_enrolled` above, all of which were already decided
+    # against just [profile_id]. Only aggregate counts are exposed, never
+    # another profile's identity/label, and any failure here is swallowed so
+    # a verify can never fail because of this add-on.
+    try:
+        active_ids = [row["id"] for row in list_profiles(include_blacklisted=False)]
+        pool = score_session(request.session, active_ids) if len(active_ids) > 1 else None
+        close_margin = 10.0
+        close_matches = (
+            sum(1 for row in pool["candidates"] if row["profile_id"] != profile_id and row["similarity"] >= result["best"]["similarity"] - close_margin)
+            if pool else 0
+        )
+        status = model_status()
+        result["context"] = {
+            "candidate_pool_size": len(active_ids),
+            "close_matches": close_matches,
+            "total_training_sessions": status["session_count"],
+            "own_enrollment_count": profile["enrollment_count"],
+        }
+    except Exception:
+        result["context"] = None
     return result
 
 
@@ -525,6 +585,24 @@ def revert_merge(event_id: str, current_user: CurrentUser = Depends(require_plat
         raise HTTPException(404, "Merge event not found") from error
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/v1/admin/profiles/{profile_id}/claim-token")
+def admin_generate_claim_token(profile_id: str, current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
+    """Dashboard equivalent of the old `generate-claim-token` CLI command
+    (now removed from the CLI — see cli.py). Mints a one-time token for the
+    real owner of a pre-existing/legacy profile to link it to their own
+    self-registered account; still gated to platform_admin, same as the CLI
+    version was gated to whoever had shell access. `promote-admin` remains
+    the one CLI-only action by design (see cli.py's docstring)."""
+    try:
+        get_profile(profile_id)
+        token = create_claim_token(profile_id)
+    except KeyError as error:
+        raise HTTPException(404, "Profile not found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return {"profile_id": profile_id, "token": token}
 
 
 @app.get("/api/v1/admin/profiles/{profile_id}/stats")

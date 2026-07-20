@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { Profile } from "@/lib/types";
+import { useToast } from "@/lib/toast";
 
 export default function ClaimProfile({ onClaimed, onBack }: { onClaimed: (profile: Profile) => void; onBack: () => void }) {
+  const { showToast } = useToast();
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,6 +17,7 @@ export default function ClaimProfile({ onClaimed, onBack }: { onClaimed: (profil
     setLoading(true);
     try {
       const profile = await api.claimProfile(token.trim());
+      showToast(`Profile "${profile.label}" claimed successfully`, "success");
       onClaimed(profile);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not claim this profile");
@@ -24,9 +27,9 @@ export default function ClaimProfile({ onClaimed, onBack }: { onClaimed: (profil
   }
 
   return (
-    <div className="flex-1 flex items-center justify-center px-6">
+    <div className="min-h-screen flex items-center justify-center px-6">
       <div className="max-w-sm w-full fade-up">
-        <button onClick={onBack} className="text-xs text-muted font-mono-tight mb-8 hover:text-text">← home</button>
+        <button onClick={onBack} className="text-sm text-muted font-mono-tight mb-8 py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">← home</button>
         <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-amber mb-3">link existing profile</div>
         <h2 className="text-2xl font-semibold mb-3">Claim your profile</h2>
         <p className="text-sm text-muted mb-7">
