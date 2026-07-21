@@ -2,16 +2,100 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-
+from dotenv import load_dotenv
+load_dotenv()   # now actually reads .env into the process environment
 
 DATA_DIR = Path(os.getenv("BEHAVEGUARD_DATA_DIR", "data")).resolve()
 ARTIFACT_DIR = Path(os.getenv("BEHAVEGUARD_ARTIFACT_DIR", "artifacts")).resolve()
+
+# Legacy SQLite path. No longer used by the application at runtime — kept only
+# as the default source path for scripts/migrate_sqlite_to_postgres.py.
 DB_PATH = DATA_DIR / "behaveguard.db"
+
+# Phase 0: PostgreSQL (+pgvector) replaces the SQLite file as the system of record.
+# Defaults point at the docker-compose services in docker-compose.yml.
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://behaveguard:behaveguard@localhost:5432/behaveguard",
+)
+
+# Phase 0: Redis is provisioned now (job-queue/cache use lands in a later phase).
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Embedding dimensionality used by pgvector columns; must match
+# BehavioralSequenceNet's fusion embedding_dim (see neural.py).
+EMBEDDING_DIM = int(os.getenv("BEHAVEGUARD_EMBEDDING_DIM", "128"))
 MODEL_PATH = ARTIFACT_DIR / "behavior_model.joblib"
 NEURAL_PATH = ARTIFACT_DIR / "behavior_neural.pt"
 PERSONAL_NEURAL_PATH = ARTIFACT_DIR / "personal_neural.pt"
 PERSONAL_NEURAL_REPORT_PATH = ARTIFACT_DIR / "personal_neural_report.json"
 PERSONAL_NEURAL_DIR = ARTIFACT_DIR / "personal_neural"
+
+# --- Phase 1: auth ---------------------------------------------------------
+
+# HS256-signed JWTs. In production this must be set to a long random value
+# via env var — the fallback here is only for local dev convenience and is
+# intentionally obvious/unsafe so it's never mistaken for a real secret.
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-only-insecure-secret-change-me")
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+
+# Profile claim tokens (linking a pre-existing/legacy profile to a newly
+# registered account) — see database.create_claim_token / claim_profile.
+CLAIM_TOKEN_EXPIRE_DAYS = int(os.getenv("CLAIM_TOKEN_EXPIRE_DAYS", "7"))
+
+# Google OAuth ("Sign in with Google"). Required only for the
+# /auth/google/* routes; password-based register/login work without these.
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/api/v1/auth/google/callback")
+
+# Where to send the browser after a successful Google login, with tokens in
+# the URL fragment (see api.py's /auth/google/callback for why a fragment).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Comma-separated list of extra allowed CORS origins, on top of the two
+# localhost defaults below. If `next dev` ever starts on a different port
+# (e.g. 3000 was already taken), requests from that origin are silently
+# blocked by CORS — which looks exactly like "lost my login" from the
+# browser's side, since the request never reaches the API at all. Set this
+# (or FRONTEND_URL above, which is always included) rather than editing code.
+_extra_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+CORS_ORIGINS = list(dict.fromkeys([
+    "http://localhost:3000", "http://127.0.0.1:3000", FRONTEND_URL, *_extra_origins,
+]))
+
+# --- Phase 2: direct-enroll + auto-merge -----------------------------------
+
+# A self-verification (POST /verify/{own_profile_id}) at or above this
+# similarity is confident enough to fold in as an additional enrollment
+# session automatically — this is the "quality gate" that replaces a human
+# reviewer for re-enrollment. Deliberately higher than the ~62 match
+# threshold used for the accept/reject decision itself.
+AUTO_ENROLLMENT_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_ENROLLMENT_SIMILARITY_THRESHOLD", "85.0"))
+
+# Centroid cosine similarity (as a 0-1 fraction, not the 0-100 display scale)
+# above which two profiles are treated as the same person and auto-merged.
+# Deliberately conservative — this executes without human review, so a false
+# merge is much costlier than a missed one.
+AUTO_MERGE_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_MERGE_SIMILARITY_THRESHOLD", "0.97"))
+
+# --- Phase 3: async retraining ----------------------------------------------
+
+RETRAIN_STREAM_KEY = os.getenv("RETRAIN_STREAM_KEY", "behaveguard:retrain_jobs")
+RETRAIN_CONSUMER_GROUP = os.getenv("RETRAIN_CONSUMER_GROUP", "retrain_workers")
+# How long a job can sit claimed-but-unacknowledged (e.g. a worker crashed
+# mid-job) before another worker is allowed to reclaim and retry it.
+RETRAIN_JOB_CLAIM_TIMEOUT_MS = int(os.getenv("RETRAIN_JOB_CLAIM_TIMEOUT_MS", "60000"))
+NEURAL_RETRAIN_EPOCHS = int(os.getenv("NEURAL_RETRAIN_EPOCHS", "20"))
+
+# --- Phase 4: rate limiting & replay detection ------------------------------
+
+RATE_LIMIT_LOGIN_PER_MINUTE = int(os.getenv("RATE_LIMIT_LOGIN_PER_MINUTE", "5"))
+RATE_LIMIT_VERIFY_PER_MINUTE = int(os.getenv("RATE_LIMIT_VERIFY_PER_MINUTE", "5"))
+# TTL for the per-profile "seen payload hashes" set used for replay detection.
+REPLAY_DETECTION_TTL_SECONDS = int(os.getenv("REPLAY_DETECTION_TTL_SECONDS", str(24 * 3600)))
 
 
 def ensure_directories() -> None:

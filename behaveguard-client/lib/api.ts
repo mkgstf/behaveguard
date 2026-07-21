@@ -1,12 +1,26 @@
 import { Profile, SessionData } from "./types";
+import { getAccessToken, refreshAccessToken } from "./auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, retried = false): Promise<T> {
+  const token = getAccessToken();
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers || {}),
+    },
   });
+  // A 401 here means the access token expired mid-session (it's a 15-minute
+  // token) — refresh once and retry transparently rather than surfacing the
+  // failure to the caller. If refresh itself fails (revoked/expired refresh
+  // token), fall through to the normal error path below.
+  if (response.status === 401 && !retried) {
+    const newToken = await refreshAccessToken();
+    if (newToken) return request<T>(path, init, true);
+  }
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
     try {
@@ -20,8 +34,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  ping: () => request<{ status: string }>("/ping"),
+  health: () => request<{ status: string; model: unknown; redis: boolean }>("/health"),
   profiles: () => request<Profile[]>("/profiles?include_blacklisted=true"),
+  myStats: () => request<MyStats>("/profiles/me/stats"),
+  adminClaimToken: (profileId: string) => request<{ profile_id: string; token: string }>(`/admin/profiles/${profileId}/claim-token`, { method: "POST" }),
   createProfile: (label: string) => request<Profile>("/profiles", { method: "POST", body: JSON.stringify({ label }) }),
+  claimProfile: (token: string) => request<Profile>("/profiles/claim", { method: "POST", body: JSON.stringify({ token }) }),
   blacklist: (id: string, blacklisted: boolean) => request<Profile>(`/profiles/${id}`, { method: "PATCH", body: JSON.stringify({ blacklisted }) }),
   deleteProfile: (id: string) => request<void>(`/profiles/${id}`, { method: "DELETE" }),
   enroll: (id: string, session: SessionData) => request<EnrollmentResult>(`/profiles/${id}/enroll`, { method: "POST", body: JSON.stringify({ session }) }),
@@ -32,6 +51,12 @@ export const api = {
   reviewComparison: (reviewId: string, profileId: string) => request<ReviewComparison>(`/admin/review-samples/${reviewId}/comparison?profile_id=${encodeURIComponent(profileId)}`),
   reviewSample: (reviewId: string, action: "approve" | "reject", profileId?: string) => request<ReviewSample>(`/admin/review-samples/${reviewId}`, { method: "PATCH", body: JSON.stringify({ action, profile_id: profileId || null }) }),
   retrain: () => request<RetrainingResult>("/admin/retrain", { method: "POST" }),
+  mergeScan: () => request<MergeScanResult>("/admin/merge/scan", { method: "POST" }),
+  mergeEvents: () => request<MergeEvent[]>("/admin/merge/events"),
+  revertMerge: (eventId: string) => request<MergeEvent>(`/admin/merge/${eventId}/revert`, { method: "POST" }),
+  jobs: () => request<JobStatus[]>("/admin/jobs"),
+  securityAlerts: (status: string = "open") => request<SecurityAlert[]>(`/admin/security-alerts?status=${encodeURIComponent(status)}`),
+  updateSecurityAlert: (id: string, status: "ack" | "dismissed") => request<SecurityAlert>(`/admin/security-alerts/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
 };
 
 export interface CandidateResult {
@@ -54,16 +79,62 @@ export interface VerificationResult {
   candidates: CandidateResult[];
   threshold: number;
   margin: number;
-  review_sample_id: string;
-  feedback_status: "awaiting_feedback" | "pending" | "approved" | "rejected";
+  // Phase 2: 1:1 self-verification no longer creates a review-queue entry
+  // (login already answers "who is this"), so these fields no longer exist
+  // on the response. `auto_enrolled` reports whether this confident
+  // self-check was folded into the profile's training data automatically.
+  auto_enrolled?: boolean;
   detail?: { category: string; similarity: number; feature_count: number }[];
+  // Phase 4.5: post-verification UX context — aggregate counts only, never
+  // another profile's identity. `null` if the context computation failed;
+  // the verification itself never fails because of that.
+  context?: {
+    candidate_pool_size: number;
+    close_matches: number;
+    total_training_sessions: number;
+    own_enrollment_count: number;
+  } | null;
+}
+
+export interface SessionBehaviorMetrics {
+  wpm: number | null;
+  dwell_ms: number | null;
+  flight_ms: number | null;
+  iki_ms: number | null;
+  rhythm_cv: number | null;
+  backspace_rate: number | null;
+  mouse_speed_pxs: number | null;
+  click_error_px: number | null;
+  target_time_ms: number | null;
+  drag_duration_ms: number | null;
+  drag_success_rate: number | null;
+  tracking_error_px: number | null;
+  tremor_px: number | null;
+}
+
+export interface MyStatsCard {
+  overall: number;
+  rank: "S" | "A" | "B" | "C" | "D";
+  ratings: Record<string, number>;
+  missing_ratings: string[];
+  population_size: number;
+}
+
+export interface MyStats {
+  profile: Profile;
+  latest: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics) | null;
+  history: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics)[];
+  card: MyStatsCard | null;
 }
 
 export interface EnrollmentResult {
   session_id: string;
   profile: Profile;
   training: { session_count: number; profile_count: number; svm_trained: boolean; version?: string };
-  neural: { trained: boolean; reason?: string; loss?: number; epochs?: number };
+  // Phase 3: the neural fusion retrain no longer blocks the enroll response —
+  // it's queued for the background worker instead. Look this id up via
+  // GET /admin/jobs (or JobStatus) to see when it's actually done.
+  neural_retrain_job_id: string;
 }
 
 export interface AdminAnalytics {
@@ -154,8 +225,31 @@ export interface ReviewComparison {
 
 export interface RetrainingResult {
   classical: { version?: string; session_count: number; profile_count: number; svm_trained: boolean };
-  neural: { trained: boolean; reason?: string; loss?: number; epochs?: number };
+  neural_retrain_job_id: string;
   included_review_samples: number;
+}
+
+export interface JobStatus {
+  job_id: string;
+  type: string;
+  reason: string;
+  status: "queued" | "running" | "done" | "failed";
+  queued_at?: string;
+  running_at?: string;
+  done_at?: string;
+  failed_at?: string;
+  result?: { trained: boolean; promoted?: boolean; holdout_accuracy?: number | null; reason?: string };
+  error?: string;
+}
+
+export interface SecurityAlert {
+  id: string;
+  profile_id: string | null;
+  kind: "replay_suspected" | "far_spike" | "brute_force";
+  severity: string;
+  details: Record<string, unknown>;
+  status: "open" | "ack" | "dismissed";
+  created_at: string;
 }
 
 export interface ProfileCharacterCard {
@@ -168,4 +262,23 @@ export interface ProfileCharacterCard {
   ratings: Record<string, number>;
   metrics: Record<string, number | null>;
   history: ({ collected_at: string } & Record<string, string | number | null>)[];
+}
+
+export interface MergeEvent {
+  id: string;
+  source_label: string;
+  source_user_id: string | null;
+  target_profile_id: string;
+  similarity_score: number;
+  method: string;
+  session_ids_moved: string[];
+  status: "applied" | "reverted";
+  created_at: string;
+  reverted_at: string | null;
+}
+
+export interface MergeScanResult {
+  threshold: number;
+  candidates_considered: number;
+  merged: { source_label: string; target_label: string; similarity: number; merge_event_id: string }[];
 }

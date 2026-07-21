@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: behaveguard
+Version: 0.1.0
+Summary: Behavioral authentication training and verification backend
+Requires-Python: >=3.12
+Requires-Dist: fastapi>=0.116
+Requires-Dist: uvicorn[standard]>=0.35
+Requires-Dist: numpy>=2.2
+Requires-Dist: scikit-learn>=1.7
+Requires-Dist: joblib>=1.5
+Requires-Dist: pandas>=2.3
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: torch>=2.7
+Requires-Dist: typer>=0.16
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: psycopg[binary]>=3.1
+Requires-Dist: alembic>=1.13
+Requires-Dist: pgvector>=0.2
+Requires-Dist: redis>=5.0
+Requires-Dist: bcrypt>=4.1
+Requires-Dist: pyjwt>=2.9
+Requires-Dist: google-auth>=2.35
+Requires-Dist: requests>=2.32
+Requires-Dist: httpx>=0.28
+Requires-Dist: email-validator>=2.2
+Provides-Extra: dev
+Requires-Dist: httpx>=0.28; extra == "dev"
+Requires-Dist: pytest>=8.4; extra == "dev"
+Requires-Dist: pytest-cov>=6.2; extra == "dev"

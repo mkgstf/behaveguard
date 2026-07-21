@@ -3,11 +3,6 @@ import pytest
 from behaveguard import database
 
 
-def setup_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "review.db")
-    database.init_db()
-
-
 def capture(profile_id: str) -> tuple[dict, dict]:
     result = {
         "match": True,
@@ -19,8 +14,7 @@ def capture(profile_id: str) -> tuple[dict, dict]:
     return result, session
 
 
-def test_reviewed_sample_is_quarantined_until_admin_approval(tmp_path, monkeypatch):
-    setup_database(tmp_path, monkeypatch)
+def test_reviewed_sample_is_quarantined_until_admin_approval():
     profile = database.create_profile("tester")
     result, session = capture(profile["id"])
     event_id = database.log_verification("1toN", None, [profile["id"]], result)
@@ -47,8 +41,7 @@ def test_reviewed_sample_is_quarantined_until_admin_approval(tmp_path, monkeypat
         database.promote_review_sample(review_id)
 
 
-def test_unlisted_identity_is_rejected(tmp_path, monkeypatch):
-    setup_database(tmp_path, monkeypatch)
+def test_unlisted_identity_is_rejected():
     profile = database.create_profile("candidate")
     result, session = capture(profile["id"])
     event_id = database.log_verification("1to1", profile["id"], [profile["id"]], result)
@@ -61,8 +54,7 @@ def test_unlisted_identity_is_rejected(tmp_path, monkeypatch):
     assert database.review_sample_counts()["available"] == 0
 
 
-def test_profile_merge_preserves_review_references(tmp_path, monkeypatch):
-    setup_database(tmp_path, monkeypatch)
+def test_profile_merge_preserves_review_references():
     source = database.create_profile("alias")
     target = database.create_profile("canonical")
     result, session = capture(source["id"])
