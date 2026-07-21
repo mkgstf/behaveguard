@@ -2,8 +2,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
-load_dotenv()   # now actually reads .env into the process environment
+
+# Load a .env file (if present) into the process environment. Every setting
+# below reads from os.getenv() only — without this call, a .env file did
+# nothing at all, regardless of what was in it, since nothing else in this
+# codebase ever read it. Real environment variables (e.g. ones actually
+# exported in the shell, or set by Cloud Run/docker) still take precedence
+# over .env, since load_dotenv() defaults to not overriding existing vars.
+load_dotenv()
+
 
 DATA_DIR = Path(os.getenv("BEHAVEGUARD_DATA_DIR", "data")).resolve()
 ARTIFACT_DIR = Path(os.getenv("BEHAVEGUARD_ARTIFACT_DIR", "artifacts")).resolve()
@@ -81,14 +90,19 @@ AUTO_ENROLLMENT_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_ENROLLMENT_SIMILARI
 # merge is much costlier than a missed one.
 AUTO_MERGE_SIMILARITY_THRESHOLD = float(os.getenv("AUTO_MERGE_SIMILARITY_THRESHOLD", "0.97"))
 
-# --- Phase 3: async retraining ----------------------------------------------
+# --- Phase 3/5: async retraining --------------------------------------------
 
-RETRAIN_STREAM_KEY = os.getenv("RETRAIN_STREAM_KEY", "behaveguard:retrain_jobs")
-RETRAIN_CONSUMER_GROUP = os.getenv("RETRAIN_CONSUMER_GROUP", "retrain_workers")
-# How long a job can sit claimed-but-unacknowledged (e.g. a worker crashed
-# mid-job) before another worker is allowed to reclaim and retry it.
-RETRAIN_JOB_CLAIM_TIMEOUT_MS = int(os.getenv("RETRAIN_JOB_CLAIM_TIMEOUT_MS", "60000"))
 NEURAL_RETRAIN_EPOCHS = int(os.getenv("NEURAL_RETRAIN_EPOCHS", "20"))
+
+# Phase 5: retrain jobs run on-demand via a Cloud Run Job execution instead
+# of a persistent Redis-Streams worker loop — see jobs.trigger_retrain_job().
+# All three must be set for the Cloud Run Jobs path to be used; if any are
+# empty (the local-dev default), the job runs immediately in a background
+# thread in-process instead, so `uv run behaveguard serve` alone still works
+# with zero GCP setup, exactly like before.
+CLOUD_RUN_JOB_NAME = os.getenv("CLOUD_RUN_JOB_NAME", "")
+CLOUD_RUN_JOB_REGION = os.getenv("CLOUD_RUN_JOB_REGION", "")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 
 # --- Phase 4: rate limiting & replay detection ------------------------------
 

@@ -1,11 +1,11 @@
 name: behaveguard
 
-# Local dev only runs the infra (Postgres/Redis) here — the API and its
-# background retrain worker both run via `uv run behaveguard serve`
-# (the worker starts as a background thread automatically; see
-# worker.py's docstring). The deployment phase is what turns the API
-# and worker into two separate services/containers sharing this same
-# Redis/Postgres, each built from a Dockerfile added at that point.
+# Local dev only runs the infra (Postgres/Redis) here — the API runs via
+# `uv run behaveguard serve`. Retrain jobs trigger on-demand: in
+# production via a Cloud Run Job execution (see jobs.trigger_retrain_job
+# and Dockerfile), locally via a background thread in the same process
+# (zero extra setup — see worker.py's docstring for why there's no
+# separate always-running worker process anymore).
 
 services:
   postgres:

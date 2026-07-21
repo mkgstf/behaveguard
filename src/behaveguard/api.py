@@ -34,9 +34,8 @@ from .database import (
 )
 from .database import create_user as db_create_user
 from .features import extract_features
-from .jobs import enqueue_retrain_neural, list_recent_job_statuses
+from .jobs import trigger_retrain_job, list_recent_job_statuses
 from .security import check_replay, rate_limit_login, rate_limit_verify, track_verification_score
-from .worker import run_worker_in_background_thread
 from .merging import scan_and_auto_merge
 from .modeling import compare_detail, model_status, retrain_model, score_session
 from .profile_analytics import build_character_cards, compare_probe_to_profile, session_behavior_metrics
@@ -105,11 +104,6 @@ app.add_middleware(
 def startup() -> None:
     init_db()
     retrain_model()
-    # Local-dev convenience: runs the retrain-job worker as a background
-    # thread inside this same process, so `uv run behaveguard serve` alone
-    # is enough — see worker.py's docstring for why the deployment phase
-    # will split this into its own service instead.
-    run_worker_in_background_thread()
 
 
 @app.get("/api/v1/ping")
@@ -363,7 +357,7 @@ def enroll(profile_id: str, request: SessionRequest, current_user: CurrentUser =
     # slow part (real PyTorch training epochs); that's queued for the
     # background worker instead of blocking this response — see worker.py.
     training = retrain_model()
-    job_id = enqueue_retrain_neural(reason=f"enroll:{profile_id}")
+    job_id = trigger_retrain_job(reason=f"enroll:{profile_id}")
     return {"session_id": session_id, "profile": get_profile(profile_id), "training": training, "neural_retrain_job_id": job_id}
 
 
@@ -408,7 +402,7 @@ def verify(profile_id: str, request: SessionRequest, http_request: Request, curr
     ):
         add_session(profile_id, request.session, features, purpose="auto_reenrollment")
         retrain_model()
-        enqueue_retrain_neural(reason=f"auto_reenroll:{profile_id}")
+        trigger_retrain_job(reason=f"auto_reenroll:{profile_id}")
         auto_enrolled = True
     result["auto_enrolled"] = auto_enrolled
     # Phase 4.5: post-verification UX context. This is a second, separate
@@ -556,7 +550,7 @@ def review_sample(review_id: str, request: ReviewAction, current_user: CurrentUs
 @app.post("/api/v1/admin/retrain")
 def retrain(current_user: CurrentUser = Depends(require_platform_admin)) -> dict:
     classical = retrain_model()
-    job_id = enqueue_retrain_neural(reason="admin_retrain")
+    job_id = trigger_retrain_job(reason="admin_retrain")
     included_review_samples = mark_approved_samples_trained()
     return {"classical": classical, "neural_retrain_job_id": job_id, "included_review_samples": included_review_samples}
 

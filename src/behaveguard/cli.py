@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import typer
@@ -14,7 +15,7 @@ from .modeling import model_status, retrain_model
 from .training import train_neural
 from .experiments import run_experiments
 from .personal_verifier import train_personal_verifier
-from .worker import run_worker
+from .worker import run_retrain_job
 
 app = typer.Typer(help="BehaveGuard administration and ML pipeline")
 
@@ -132,17 +133,30 @@ def revert_merge_command(event_id: str) -> None:
     typer.echo({"classical": retrain_model()})
 
 
-@app.command("worker")
-def worker_command(
-    consumer_name: str = typer.Option(None, help="Consumer identity within the retrain_workers group (defaults to hostname-based)"),
-) -> None:
-    """Run the retrain-job worker as a standalone, blocking process.
+@app.command("run-retrain-job")
+def run_retrain_job_command() -> None:
+    """One-shot entrypoint for a Cloud Run Job execution: runs exactly one
+    retrain job (reading which one from env vars set as container
+    overrides — see jobs.trigger_retrain_job) and exits — no persistent
+    process, nothing kept running afterward.
 
-    Not required for local dev — `behaveguard serve` already runs this same
-    loop as a background thread automatically. This command exists for the
-    deployment shape where the worker runs as its own independent
-    service/container instead (see worker.py's docstring), and for anyone
-    who wants to run it separately locally too (e.g. to watch its logs on
-    their own, or restart it independently of the API process).
+    Replaces the old `worker` command (a blocking, always-running consumer
+    loop) as of the Phase 5 redeploy — see worker.py's docstring for why.
+    Not meant to be run manually in normal operation; `trigger_retrain_job`
+    is what invokes this, either via a real Cloud Run Job execution in
+    production or a local background thread in dev.
     """
-    run_worker(consumer_name=consumer_name)
+    job_id = os.environ.get("RETRAIN_JOB_ID")
+    job_type = os.environ.get("RETRAIN_JOB_TYPE", "retrain_neural")
+    reason = os.environ.get("RETRAIN_JOB_REASON", "")
+    if not job_id:
+        typer.echo("RETRAIN_JOB_ID env var is required — this command is meant to be invoked by trigger_retrain_job, not run directly.")
+        raise typer.Exit(1)
+    init_db()
+    result = run_retrain_job(job_id, job_type, reason)
+    if not result.get("trained", True) and "error" in result:
+        # Non-zero exit so the Cloud Run Job execution is recorded as
+        # failed (visible in its execution history/logs), not silently green.
+        typer.echo(f"Job {job_id} failed: {result['error']}")
+        raise typer.Exit(1)
+    typer.echo(result)
