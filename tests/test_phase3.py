@@ -5,10 +5,10 @@ from fastapi.testclient import TestClient
 from behaveguard import database as d
 from behaveguard.api import app
 from behaveguard.features import extract_features
-from behaveguard.jobs import enqueue_retrain_neural, get_job_status
+from behaveguard.jobs import get_job_status, trigger_retrain_job
 from behaveguard.modeling import retrain_model
 from behaveguard.training import train_neural_and_promote
-from behaveguard.worker import run_worker
+from behaveguard.worker import run_retrain_job
 
 client = TestClient(app)
 
@@ -40,16 +40,27 @@ def _seed_two_profiles():
     return a, b
 
 
-def test_enqueue_and_worker_processes_job():
+def test_run_retrain_job_processes_successfully():
     _seed_two_profiles()
-    job_id = enqueue_retrain_neural("test:direct")
-    assert get_job_status(job_id)["status"] == "queued"
+    job_id = "test-job-direct"
+    result = run_retrain_job(job_id, "retrain_neural", "test:direct")
 
-    run_worker(consumer_name="test-consumer", iterations=2)
-
+    assert result["trained"] is True
     final = get_job_status(job_id)
     assert final["status"] == "done"
     assert final["result"]["trained"] is True
+
+
+def test_trigger_retrain_job_starts_processing():
+    _seed_two_profiles()
+    job_id = trigger_retrain_job("test:trigger")
+    # Local-dev fallback runs this in a background thread immediately, so by
+    # the time we check, it may already be past "queued" — assert it was at
+    # least started, rather than asserting an exact status that depends on
+    # thread timing.
+    status = get_job_status(job_id)
+    assert status is not None
+    assert status["status"] in ("queued", "running", "done")
 
 
 def test_enroll_route_enqueues_job_instead_of_blocking():
@@ -66,7 +77,7 @@ def test_enroll_route_enqueues_job_instead_of_blocking():
     body = response.json()
     assert "neural_retrain_job_id" in body
     assert "training" in body  # classical retrain still happens inline
-    assert get_job_status(body["neural_retrain_job_id"])["status"] == "queued"
+    assert get_job_status(body["neural_retrain_job_id"])["status"] in ("queued", "running", "done")
 
 
 def test_admin_retrain_enqueues_job():
@@ -92,7 +103,7 @@ def test_admin_jobs_endpoint_lists_recent_jobs():
     )
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
 
-    enqueue_retrain_neural("test:jobs-list")
+    trigger_retrain_job("test:jobs-list")
     response = client.get("/api/v1/admin/jobs", headers=admin_headers)
     assert response.status_code == 200
     assert len(response.json()) >= 1

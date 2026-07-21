@@ -8,6 +8,39 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Ephemeral, job-scoped services — created fresh and destroyed when the
+    # job finishes. There's no path from here to any persistent/real
+    # database; the explicit "_test" database name below is defense in
+    # depth on top of that, satisfying the safety check in
+    # tests/conftest.py (which refuses to run — and would TRUNCATE
+    # everything — against anything that doesn't look like a dedicated
+    # test database).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: behaveguard
+          POSTGRES_PASSWORD: behaveguard
+          POSTGRES_DB: behaveguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U behaveguard -d behaveguard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://behaveguard:behaveguard@localhost:5432/behaveguard_test
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
