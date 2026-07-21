@@ -20,12 +20,30 @@ const GRACE_MS = 350;
 
 type BootState = "checking" | "waking" | "warm" | "error";
 
+// This app's whole premise is measuring real keyboard/mouse behavior — it
+// fundamentally can't work on a touchscreen with no physical keyboard.
+// Checked once on mount: actual mobile devices (UA) OR a narrow viewport
+// combined with a coarse (touch) primary pointer — a real desktop window
+// just resized narrow still has a fine pointer and isn't blocked.
+function isUnsupportedDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  const mobileUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const narrow = window.innerWidth < 768;
+  return mobileUA || (coarsePointer && narrow);
+}
+
 export default function Bootloader({ children }: { children: React.ReactNode }) {
+  const [unsupported, setUnsupported] = useState(false);
   const [state, setState] = useState<BootState>("checking");
   const [secondsLeft, setSecondsLeft] = useState(30);
   const [factIdx, setFactIdx] = useState(() => Math.floor(Math.random() * FACTS.length));
   const [attempt, setAttempt] = useState(0);
   const cancelled = useRef(false);
+
+  useEffect(() => {
+    Promise.resolve().then(() => setUnsupported(isUnsupportedDevice()));
+  }, []);
 
   useEffect(() => {
     cancelled.current = false;
@@ -65,6 +83,20 @@ export default function Bootloader({ children }: { children: React.ReactNode }) 
     const fact = setInterval(() => setFactIdx((i) => (i + 1) % FACTS.length), 5500);
     return () => { clearInterval(tick); clearInterval(fact); };
   }, [state]);
+
+  if (unsupported) {
+    return (
+      <div className="min-h-dvh flex items-center justify-center px-6">
+        <div className="max-w-sm text-center fade-up">
+          <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-amber mb-4">desktop only</div>
+          <h2 className="text-xl font-semibold mb-3">BehaveGuard needs a real keyboard and mouse</h2>
+          <p className="text-sm text-muted leading-relaxed">
+            This is a behavioral biometrics test built around actual typing rhythm and cursor movement — it isn&apos;t meaningful on a touchscreen. Please open this on a PC or laptop instead.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (state === "warm" || state === "checking") return <>{children}</>;
 

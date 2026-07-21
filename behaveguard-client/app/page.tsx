@@ -63,7 +63,7 @@ export default function Home() {
   const dotTrials = useRef<DotTrial[]>([]);
   const trackTrials = useRef<TrackTrial[]>([]);
   const dragTrials = useRef<DragTrial[]>([]);
-  const lastSessionData = useRef<SessionData | null>(null);
+  const [lastSessionData, setLastSessionData] = useState<SessionData | null>(null);
   const verifiedProfileId = useRef<string | null>(null);
   const screenRef = useRef<ExtendedScreen>("landing");
   const { showToast } = useToast();
@@ -94,9 +94,13 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const urlScreen = new URLSearchParams(window.location.search).get("screen") as ExtendedScreen | null;
+    const params = new URLSearchParams(window.location.search);
+    const urlScreen = params.get("screen") as ExtendedScreen | null;
     const restored: ExtendedScreen = urlScreen && RESTORABLE_SCREENS.includes(urlScreen) ? urlScreen : "landing";
-    window.history.replaceState({ screen: restored }, "", `?screen=${restored}`);
+    window.history.replaceState({ screen: restored }, "", `?screen=${restored}${window.location.hash}`);
+    if (params.get("oauth_error")) {
+      Promise.resolve().then(() => showToast("Google sign-in was cancelled or didn't complete.", "error"));
+    }
     if (restored !== "landing") {
       isPopping.current = true;
       Promise.resolve().then(() => {
@@ -213,7 +217,7 @@ export default function Home() {
   }
 
   async function submit(data: SessionData) {
-    lastSessionData.current = data;
+    setLastSessionData(data);
     verifiedProfileId.current = mode === "verify" ? selected[0].id : null;
     setRetrainState("idle");
     try {
@@ -231,10 +235,10 @@ export default function Home() {
   }
 
   async function retrainFromLastVerification() {
-    if (!lastSessionData.current || !verifiedProfileId.current) return;
+    if (!lastSessionData || !verifiedProfileId.current) return;
     setRetrainState("loading");
     try {
-      const response = await api.enroll(verifiedProfileId.current, lastSessionData.current);
+      const response = await api.enroll(verifiedProfileId.current, lastSessionData);
       setMyProfile(response.profile);
       setRetrainState("done");
       showToast("Session added to your profile's training data", "success");
@@ -283,6 +287,7 @@ export default function Home() {
           result={result}
           onHome={reset}
           enrollmentStats={enrollmentStats}
+          sessionData={lastSessionData}
           onRetrain={retrainFromLastVerification}
           retrainState={retrainState}
         />

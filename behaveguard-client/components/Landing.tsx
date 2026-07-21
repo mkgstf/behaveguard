@@ -2,15 +2,9 @@
 
 import { useAuth } from "@/lib/auth";
 import { MyStats } from "@/lib/api";
-import { formatRelative } from "@/lib/format";
+import { globalTypingPercentile } from "@/lib/benchmarks";
 
 type ProfileCheckStatus = "idle" | "loading" | "found" | "none" | "error";
-
-// A commonly-cited average adult typing speed, used only to give the WPM
-// number a friendly point of comparison for people who don't otherwise know
-// what a "good" WPM looks like. Clearly labeled as a rough benchmark, not a
-// precise population statistic.
-const AVERAGE_TYPIST_WPM = 40;
 
 export default function Landing({
   onEnroll,
@@ -44,20 +38,20 @@ export default function Landing({
   const isAdmin = user?.role === "org_admin" || user?.role === "platform_admin";
 
   return (
-    <div className="flex-1 flex items-center justify-center px-6 py-16">
+    <div className="flex-1 flex items-center justify-center px-6 py-10">
       <div className="max-w-3xl w-full text-center fade-up">
-        <div className="font-mono-tight text-sm uppercase tracking-[0.3em] text-muted mb-6">
+        <div className="font-mono-tight text-sm uppercase tracking-[0.3em] text-muted mb-5">
           behaveguard
         </div>
-        <h1 className="font-mono-tight text-4xl sm:text-5xl leading-tight mb-4">
+        <h1 className="font-mono-tight text-4xl sm:text-5xl leading-tight mb-3">
           <span className="text-amber">type</span>
-          <span className="text-muted">.</span>{" "}
+          <span className="text-muted mr-1.5">.</span>
           <span className="text-cyan">move</span>
-          <span className="text-muted">.</span>{" "}
+          <span className="text-muted mr-1.5">.</span>
           <span className="text-text">be measured</span>
           <span className="caret text-text">|</span>
         </h1>
-        <p className="text-muted text-base leading-relaxed mb-10 max-w-xl mx-auto">
+        <p className="text-muted text-base leading-relaxed mb-8 max-w-xl mx-auto">
           A 5-minute test of how you type and how you move a cursor. Used to study
           behavioral biometrics — the rhythm that&apos;s unique to you, not what you type.
         </p>
@@ -90,7 +84,7 @@ export default function Landing({
         ) : (
           <>
             {isTrained && stats?.latest && (
-              <HighlightsBoard stats={stats} onOpenStats={onOpenStats} />
+              <HighlightsRow stats={stats} onOpenStats={onOpenStats} />
             )}
 
             {/* First-enrollment vs. add-sample distinction: only offer
@@ -110,15 +104,20 @@ export default function Landing({
               </div>
             ) : (
               <div className="max-w-xs mx-auto">
-                <button onClick={onEnroll} className="cursor-pointer w-full bg-cyan text-bg rounded-xl p-5 hover:brightness-110 transition active:scale-[0.99] text-left">
-                  <span className="block font-mono-tight text-xs uppercase tracking-widest mb-2">
-                    {hasOwnProfile ? "continue enrolling" : "enroll"}
+                <button onClick={onEnroll} className="cursor-pointer w-full bg-cyan text-bg rounded-xl p-5 hover:brightness-110 transition active:scale-[0.99] text-left flex items-center gap-3">
+                  <span className="flex-1">
+                    <span className="block font-mono-tight text-xs uppercase tracking-widest mb-2">
+                      {hasOwnProfile ? "continue enrolling" : "enroll"}
+                    </span>
+                    <span className="block text-sm">
+                      {hasOwnProfile
+                        ? "Finish your first behavioral sample to activate your profile."
+                        : "Create your profile with an initial behavioral sample."}
+                    </span>
                   </span>
-                  <span className="block text-sm">
-                    {hasOwnProfile
-                      ? "Finish your first behavioral sample to activate your profile."
-                      : "Create your profile with an initial behavioral sample."}
-                  </span>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0 opacity-80">
+                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
                 <button onClick={onClaim} className="cursor-pointer w-full mt-3 text-xs text-muted font-mono-tight hover:text-text transition py-2">
                   or claim an existing profile →
@@ -135,7 +134,7 @@ export default function Landing({
           </>
         )}
 
-        <div className="mt-10 text-xs text-muted font-mono-tight">
+        <div className="mt-8 text-xs text-muted font-mono-tight">
           keyboard rhythm · cursor dynamics · calibrated matching
         </div>
       </div>
@@ -143,67 +142,47 @@ export default function Landing({
   );
 }
 
-function HighlightsBoard({ stats, onOpenStats }: { stats: MyStats; onOpenStats: () => void }) {
+function HighlightsRow({ stats, onOpenStats }: { stats: MyStats; onOpenStats: () => void }) {
   const latest = stats.latest;
   if (!latest) return null;
   const wpm = latest.wpm;
-  const vsAverage = wpm != null ? Math.round(((wpm - AVERAGE_TYPIST_WPM) / AVERAGE_TYPIST_WPM) * 100) : null;
-  const card = stats.card;
+  const percentile = wpm != null ? globalTypingPercentile(wpm) : null;
 
   return (
-    <div className="mb-8 text-left">
-      <div className="flex items-center justify-between mb-4 max-w-xl mx-auto">
-        <span className="font-mono-tight text-xs uppercase tracking-widest text-muted">your highlights</span>
-        <span className="text-xs text-muted font-mono-tight">{stats.history.length} sample{stats.history.length === 1 ? "" : "s"} · updated {formatRelative(latest.collected_at)}</span>
-      </div>
-      {/* Two vertical columns of 2-3 cards each, rather than one flat
-          horizontal strip — easier to scan and gives each number room to
-          breathe. */}
-      <div className="grid sm:grid-cols-2 gap-4 max-w-xl mx-auto">
-        <div className="space-y-3">
-          <HighlightCard
-            label="typing speed"
-            value={wpm == null ? "—" : `${Math.round(wpm)} wpm`}
-            sub={vsAverage == null ? "no comparison yet" : vsAverage >= 0 ? `${vsAverage}% faster than average` : `${Math.abs(vsAverage)}% slower than average`}
-            accent="amber"
-          />
-          <HighlightCard
-            label="rhythm consistency"
-            value={latest.rhythm_cv == null ? "—" : `${Math.round((1 - Math.min(latest.rhythm_cv, 1)) * 100)}%`}
-            sub="how steady your pace stays"
-            accent="cyan"
-          />
-        </div>
-        <div className="space-y-3">
-          <HighlightCard
-            label="profile rank"
-            value={card ? card.rank : "—"}
-            sub={card ? `top ${Math.max(1, 100 - Math.round(card.overall))}% of ${card.population_size} enrolled` : "keep enrolling to unlock"}
-            accent="amber"
-          />
-          <HighlightCard
-            label="click precision"
-            value={latest.click_error_px == null ? "—" : `${Math.round(latest.click_error_px)}px`}
-            sub="average distance from target"
-            accent="cyan"
-          />
-        </div>
-      </div>
-      <div className="max-w-xl mx-auto mt-4 text-center">
-        <button onClick={onOpenStats} className="cursor-pointer font-mono-tight text-xs uppercase tracking-widest text-cyan hover:brightness-110 transition border border-cyan/30 rounded-full px-5 py-2.5">
-          view full stats →
+    // Single compact row (not a 2x2 grid) so it never pushes the
+    // verify/add-sample buttons below the fold — the whole point of
+    // "highlights" is a quick glance, not a full dashboard (that's what
+    // "view full stats" is for).
+    <div className="max-w-xl mx-auto mb-6 text-left">
+      <div className="font-mono-tight text-[10px] uppercase tracking-widest text-muted mb-2 px-0.5">your highlights</div>
+      <div className="flex flex-wrap items-stretch gap-2">
+        <Chip label="typing speed" value={wpm == null ? "—" : `${Math.round(wpm)} wpm`} accent="amber" />
+        <Chip
+          label="vs. global typists"
+          value={percentile == null ? "—" : `top ${Math.max(1, Math.round(100 - percentile))}%`}
+          accent="cyan"
+        />
+        <Chip
+          label="click precision"
+          value={latest.click_error_px == null ? "—" : `${Math.round(latest.click_error_px)}px`}
+          accent="amber"
+        />
+        <button
+          onClick={onOpenStats}
+          className="cursor-pointer flex-1 min-w-[100px] font-mono-tight text-xs uppercase tracking-widest text-cyan hover:brightness-110 transition border border-cyan/30 rounded-xl px-3 flex items-center justify-center"
+        >
+          view stats →
         </button>
       </div>
     </div>
   );
 }
 
-function HighlightCard({ label, value, sub, accent }: { label: string; value: string; sub: string; accent: "amber" | "cyan" }) {
+function Chip({ label, value, accent }: { label: string; value: string; accent: "amber" | "cyan" }) {
   return (
-    <div className="bg-surface border border-border rounded-xl p-4">
-      <div className="text-[10px] uppercase tracking-wider text-muted mb-1.5">{label}</div>
-      <div className={`font-mono-tight text-2xl tabular-nums ${accent === "amber" ? "text-amber" : "text-cyan"}`}>{value}</div>
-      <div className="text-xs text-muted mt-1">{sub}</div>
+    <div className="flex-1 min-w-[110px] bg-surface border border-border rounded-xl px-3 py-2">
+      <div className={`font-mono-tight text-base tabular-nums ${accent === "amber" ? "text-amber" : "text-cyan"}`}>{value}</div>
+      <div className="text-[10px] uppercase tracking-wider text-muted mt-0.5">{label}</div>
     </div>
   );
 }

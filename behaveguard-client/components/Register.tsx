@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAuth, googleLoginUrl } from "@/lib/auth";
 import { useToast } from "@/lib/toast";
+import GoogleIcon from "@/components/GoogleIcon";
 
 export default function Register({ onSwitchToLogin, onBack }: { onSwitchToLogin: () => void; onBack: () => void }) {
   const { registerWithPassword } = useAuth();
@@ -75,6 +76,7 @@ export default function Register({ onSwitchToLogin, onBack }: { onSwitchToLogin:
           href={googleLoginUrl()}
           className="w-full flex items-center justify-center gap-2 border border-border rounded-lg py-3 text-sm hover:border-muted transition"
         >
+          <GoogleIcon />
           Continue with Google
         </a>
 

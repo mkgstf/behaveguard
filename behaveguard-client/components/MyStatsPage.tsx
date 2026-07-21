@@ -2,8 +2,7 @@
 
 import { MyStats, SessionBehaviorMetrics } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-
-const AVERAGE_TYPIST_WPM = 40;
+import { AVERAGE_TYPIST_WPM, globalTypingPercentile } from "@/lib/benchmarks";
 
 const METRICS: { key: keyof SessionBehaviorMetrics; label: string; unit: string }[] = [
   { key: "wpm", label: "typing speed", unit: "wpm" },
@@ -19,9 +18,11 @@ const METRICS: { key: keyof SessionBehaviorMetrics; label: string; unit: string 
 export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; onBack: () => void }) {
   if (!stats || !stats.latest) {
     return (
-      <div className="min-h-screen px-6 py-10">
-        <div className="max-w-3xl mx-auto fade-up">
+      <div className="min-h-screen">
+        <div className="relative w-full pt-6 px-4">
           <BackLink onBack={onBack} />
+        </div>
+        <div className="max-w-3xl mx-auto px-6 fade-up">
           <p className="text-sm text-muted mt-8">No stats yet — enroll or add a sample to see your behavioral highlights here.</p>
         </div>
       </div>
@@ -34,12 +35,15 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
   const values = (key: keyof SessionBehaviorMetrics) => history.map((row) => row[key] as number | null);
   const wpm = latest.wpm;
   const vsAverage = wpm != null ? Math.round(((wpm - AVERAGE_TYPIST_WPM) / AVERAGE_TYPIST_WPM) * 100) : null;
+  const percentile = wpm != null ? globalTypingPercentile(wpm) : null;
 
   return (
-    <div className="min-h-screen px-6 py-10 overflow-y-auto">
-      <div className="max-w-3xl mx-auto fade-up">
+    <div className="min-h-screen overflow-y-auto">
+      <div className="relative w-full pt-6 px-4">
         <BackLink onBack={onBack} />
-        <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-cyan mb-3 mt-8">my stats</div>
+      </div>
+      <div className="max-w-3xl mx-auto px-6 pb-16 fade-up">
+        <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-cyan mb-3 mt-4">my stats</div>
         <h2 className="text-3xl font-semibold mb-2">{stats.profile.label}</h2>
         <p className="text-sm text-muted mb-8">
           {history.length} enrolled session{history.length === 1 ? "" : "s"} · latest sample {formatDateTime(latest.collected_at)}
@@ -56,10 +60,10 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
             accent="amber"
           />
           <BigStat
-            label="profile rank"
-            value={card ? card.rank : "—"}
+            label="vs. global typists"
+            value={percentile == null ? "—" : `top ${Math.max(1, Math.round(100 - percentile))}%`}
             unit=""
-            sub={card ? `better than roughly ${Math.max(1, Math.round(card.overall))}% of ${card.population_size} enrolled profile${card.population_size === 1 ? "" : "s"}` : "keep enrolling to unlock a rank"}
+            sub="based on published typing-test benchmarks, not this app's own users"
             accent="cyan"
           />
           <BigStat
@@ -70,6 +74,12 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
             accent="amber"
           />
         </div>
+
+        {card && (
+          <p className="text-xs text-muted mb-6 -mt-6">
+            Also ranked <span className="text-text font-mono-tight">{card.rank}</span> among {card.population_size} profile{card.population_size === 1 ? "" : "s"} enrolled on this instance.
+          </p>
+        )}
 
         <h3 className="font-mono-tight text-xs uppercase tracking-widest text-muted mb-4">session history</h3>
         <div className="space-y-5 mb-10">
@@ -84,7 +94,7 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
 
 function BackLink({ onBack }: { onBack: () => void }) {
   return (
-    <button onClick={onBack} className="cursor-pointer text-sm text-muted font-mono-tight py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">
+    <button onClick={onBack} className="cursor-pointer absolute left-4 top-6 z-20 text-sm text-muted font-mono-tight py-2.5 px-3 hover:text-text transition inline-flex items-center gap-1.5">
       ← home
     </button>
   );

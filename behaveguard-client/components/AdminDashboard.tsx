@@ -16,10 +16,28 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [comparisonBusy, setComparisonBusy] = useState("");
   const [reviewBusy, setReviewBusy] = useState("");
   const [trainingMessage, setTrainingMessage] = useState("");
+  const [claimTokens, setClaimTokens] = useState<Record<string, string>>({});
+  const [claimTokenBusy, setClaimTokenBusy] = useState("");
+  const [claimTokenError, setClaimTokenError] = useState<Record<string, string>>({});
   const load = useCallback(() => api.analytics().then(setData).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
   async function blacklist(id: string, value: boolean) { await api.blacklist(id, value); await load(); }
   async function remove(id: string, label: string) { if (window.confirm(`Delete ${label} and all enrollment sessions?`)) { await api.deleteProfile(id); await load(); } }
+  async function generateClaimToken(id: string) {
+    setClaimTokenBusy(id);
+    setClaimTokenError((current) => ({ ...current, [id]: "" }));
+    try {
+      const result = await api.adminClaimToken(id);
+      setClaimTokens((current) => ({ ...current, [id]: result.token }));
+    } catch (reason) {
+      // Most common cause: this profile already has an owner — claim
+      // tokens are only for pre-existing/legacy (e.g. xlsx-imported)
+      // profiles with no account linked yet, not self-enrolled ones.
+      setClaimTokenError((current) => ({ ...current, [id]: reason instanceof Error ? reason.message : "Could not generate a claim token" }));
+    } finally {
+      setClaimTokenBusy("");
+    }
+  }
   async function review(id: string, action: "approve" | "reject", fallbackProfileId?: string | null) {
     setReviewBusy(id);
     setError("");
@@ -125,7 +143,19 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       </section>}
       <AdminJobsAndAlerts />
       <JobsAndAlerts />
-      <section className="bg-surface border border-border rounded-xl overflow-hidden"><div className="p-5 border-b border-border"><h2 className="font-mono-tight text-xs uppercase tracking-widest">profiles</h2></div><div className="divide-y divide-border">{data.profiles.map((profile) => <div key={profile.id} className="p-4 flex flex-wrap items-center gap-4"><div className="flex-1 min-w-40"><div className={profile.blacklisted ? "line-through text-muted" : ""}>{profile.label}</div><div className="text-xs text-muted mt-1">{profile.enrollment_count} enrollment{profile.enrollment_count === 1 ? "" : "s"} · {profile.last_enrollment ? formatDate(profile.last_enrollment) : "never"}</div></div><button onClick={() => blacklist(profile.id, !profile.blacklisted)} className={`px-3 py-2 rounded text-xs font-mono-tight ${profile.blacklisted ? "bg-cyan/15 text-cyan" : "bg-amber/15 text-amber"}`}>{profile.blacklisted ? "restore" : "blacklist"}</button><button onClick={() => remove(profile.id, profile.label)} className="px-3 py-2 rounded text-xs font-mono-tight bg-danger/15 text-danger">delete</button></div>)}</div></section>
+      <section className="bg-surface border border-border rounded-xl overflow-hidden"><div className="p-5 border-b border-border"><h2 className="font-mono-tight text-xs uppercase tracking-widest">profiles</h2></div><div className="divide-y divide-border">{data.profiles.map((profile) => <div key={profile.id} className="p-4"><div className="flex flex-wrap items-center gap-4"><div className="flex-1 min-w-40"><div className={profile.blacklisted ? "line-through text-muted" : ""}>{profile.label}</div><div className="text-xs text-muted mt-1">{profile.enrollment_count} enrollment{profile.enrollment_count === 1 ? "" : "s"} · {profile.last_enrollment ? formatDate(profile.last_enrollment) : "never"} · {profile.user_id ? "linked to an account" : "unclaimed"}</div></div>
+        <button
+          disabled={Boolean(profile.user_id) || claimTokenBusy === profile.id}
+          onClick={() => void generateClaimToken(profile.id)}
+          title={profile.user_id ? "Already linked to an account — claim tokens are only for unclaimed profiles" : "Generate a one-time link for someone to claim this profile"}
+          className="px-3 py-2 rounded text-xs font-mono-tight bg-cyan/15 text-cyan disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {claimTokenBusy === profile.id ? "generating…" : "claim token"}
+        </button>
+        <button onClick={() => blacklist(profile.id, !profile.blacklisted)} className={`px-3 py-2 rounded text-xs font-mono-tight ${profile.blacklisted ? "bg-cyan/15 text-cyan" : "bg-amber/15 text-amber"}`}>{profile.blacklisted ? "restore" : "blacklist"}</button><button onClick={() => remove(profile.id, profile.label)} className="px-3 py-2 rounded text-xs font-mono-tight bg-danger/15 text-danger">delete</button></div>
+        {claimTokens[profile.id] && <div className="mt-3 bg-surface-2 border border-border rounded-lg p-3 flex flex-wrap items-center gap-3"><code className="text-xs font-mono-tight break-all flex-1">{claimTokens[profile.id]}</code><button onClick={() => navigator.clipboard.writeText(claimTokens[profile.id])} className="px-3 py-1.5 rounded text-xs font-mono-tight bg-cyan text-bg shrink-0">copy</button></div>}
+        {claimTokenError[profile.id] && <div className="mt-3 text-xs text-danger">{claimTokenError[profile.id]}</div>}
+      </div>)}</div></section>
       <div className="mt-6 text-xs text-muted">Model {data.model.version.slice(0,19)} · {data.model.svm_trained ? "SVM active" : "centroid mode"} · neural {data.model.neural_ready ? "ready" : "waiting for repeated sessions"}</div>
     </div></div>
   );

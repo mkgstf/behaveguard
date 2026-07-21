@@ -146,3 +146,48 @@ def test_verify_response_includes_privacy_safe_context_block():
     # Never leaks another profile's identity — only aggregate counts.
     assert "candidates" not in body["context"]
     assert "profiles" not in body["context"]
+
+
+def test_google_callback_handles_cancelled_consent_gracefully():
+    # Google redirects back with `error=...` and no code/state when the user
+    # cancels/denies consent on its own screen — this must not be treated as
+    # a server error (previously a raw 422 since code/state were required).
+    response = client.get("/api/v1/auth/google/callback?error=access_denied", follow_redirects=False)
+    assert response.status_code in (302, 307)
+    assert "oauth_error=1" in response.headers["location"]
+
+
+def test_google_callback_handles_missing_code_gracefully():
+    response = client.get("/api/v1/auth/google/callback", follow_redirects=False)
+    assert response.status_code in (302, 307)
+    assert "oauth_error=1" in response.headers["location"]
+
+
+def test_google_callback_success_redirects_to_frontend_root():
+    # Regression test for the 404: tokens must land on the frontend root
+    # (which AuthProvider handles globally), not a dedicated /auth/callback
+    # route that was never created.
+    import behaveguard.oauth_google as oauth_google
+
+    def fake_exchange(code):
+        return "fake-jwt"
+
+    def fake_verify(jwt):
+        return {"email": "google-user@example.com", "sub": "google-subject-123"}
+
+    original_exchange = oauth_google.exchange_code_for_id_token
+    original_verify = oauth_google.verify_id_token
+    oauth_google.exchange_code_for_id_token = fake_exchange
+    oauth_google.verify_id_token = fake_verify
+    try:
+        state = "test-state-token"
+        client.cookies.set("bg_oauth_state", state)
+        response = client.get(f"/api/v1/auth/google/callback?code=abc&state={state}", follow_redirects=False)
+        assert response.status_code in (302, 307)
+        location = response.headers["location"]
+        assert "/auth/callback" not in location
+        assert "access_token=" in location
+    finally:
+        oauth_google.exchange_code_for_id_token = original_exchange
+        oauth_google.verify_id_token = original_verify
+        client.cookies.clear()

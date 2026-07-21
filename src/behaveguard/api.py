@@ -208,7 +208,20 @@ def google_login() -> RedirectResponse:
 
 
 @app.get("/api/v1/auth/google/callback")
-def google_callback(code: str, state: str, request: Request) -> RedirectResponse:
+def google_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    # The user cancelling/denying consent on Google's own screen is a normal,
+    # expected outcome, not a server error — Google redirects back here with
+    # `error=...` and no `code`/`state` at all in that case. Send them back
+    # to the frontend with a query flag it can show a plain message for,
+    # rather than surfacing a raw 422/401 with no context.
+    if error or not code or not state:
+        return RedirectResponse(f"{FRONTEND_URL}/?screen=login&oauth_error=1")
+
     expected_state = request.cookies.get("bg_oauth_state")
     if not expected_state or not secrets.compare_digest(expected_state, state):
         raise HTTPException(401, "Invalid or expired OAuth state")
@@ -228,8 +241,13 @@ def google_callback(code: str, state: str, request: Request) -> RedirectResponse
             user = db_create_user(email, oauth_provider="google", oauth_subject=subject)
 
     tokens = _issue_token_pair(user)
+    # Land on the app root, not a dedicated /auth/callback route — there
+    # isn't one (nor does there need to be): AuthProvider's fragment-reading
+    # effect runs globally on every page already, and this path is purely
+    # internal (never registered with Google, unlike GOOGLE_REDIRECT_URI
+    # above), so it's free to point wherever the frontend actually handles it.
     redirect_url = (
-        f"{FRONTEND_URL}/auth/callback"
+        f"{FRONTEND_URL}/"
         f"#access_token={tokens['access_token']}&refresh_token={tokens['refresh_token']}"
     )
     # Tokens travel in the URL fragment, not the query string or a redirect
