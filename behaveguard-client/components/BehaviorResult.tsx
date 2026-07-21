@@ -62,7 +62,15 @@ export default function BehaviorResult({
   // in automatically, match or not, rather than only for borderline matches.
   const canOfferRetrain = result.candidates.length === 1 && !result.auto_enrolled;
   const neutral = !result.match;
-  const confidence = result.best.certainty;
+  const isOneToOne = result.candidates.length === 1;
+  // Bug fix: `certainty` is a softmax across *all* candidates considered —
+  // with only one candidate (every 1:1 verification), softmax of a single
+  // value is mathematically always 100%, regardless of how well it actually
+  // matched. `similarity` is the real, threshold-driving number that
+  // actually varies session to session — that's what belongs in the
+  // headline. `certainty` only becomes meaningful with multiple candidates
+  // (1:N identification), where it reflects confidence in the ranking.
+  const headline = result.best.similarity;
 
   return (
     <Shell
@@ -77,25 +85,34 @@ export default function BehaviorResult({
           : "Your typing and mouse rhythm this session closely resembled the enrolled profile below."}
       </p>
 
-      {/* One clear headline number instead of five raw model fields side by
-          side (similarity/certainty/neural-vote/personal-neural/decision) —
-          those often disagreed or showed "n/a", which read as confusing
-          rather than informative to someone who isn't building the model. */}
-      <div className="flex items-center gap-5 bg-surface border border-border rounded-xl p-5 mb-6">
-        <ConfidenceRing value={confidence} neutral={neutral} />
-        <div>
-          <div className="text-sm text-muted mb-1">confidence this was {result.best.label}</div>
-          <div className={`font-mono-tight text-3xl ${neutral ? "text-muted" : "text-cyan"}`}>{confidence}%</div>
+      {/* One card, one clear number, one line of context underneath —
+          replaces the earlier separate confidence card + "how this stacks
+          up" card, and fixes a real bug: the old headline used `certainty`,
+          which is always 100% for a 1:1 check by construction (softmax over
+          a single candidate). `similarity` is the number that actually
+          drives match/no-match and varies meaningfully session to session. */}
+      <div className="bg-surface border border-border rounded-xl p-5 mb-6">
+        <div className="flex items-center gap-5">
+          <ConfidenceRing value={headline} threshold={result.threshold} neutral={neutral} />
+          <div>
+            <div className="text-sm text-muted mb-1">similarity to {result.best.label}&apos;s enrolled profile</div>
+            <div className={`font-mono-tight text-3xl ${neutral ? "text-muted" : "text-cyan"}`}>{headline}%</div>
+          </div>
         </div>
+        {result.context && (
+          <div className="text-xs text-muted border-t border-border mt-4 pt-3">
+            checked against {result.context.candidate_pool_size} enrolled profile{result.context.candidate_pool_size === 1 ? "" : "s"}
+            {" · "}{result.context.close_matches} other{result.context.close_matches === 1 ? "" : "s"} scored similarly close
+            {" · "}{result.threshold}% similarity needed to confirm a match
+          </div>
+        )}
       </div>
 
-      {result.context && (
-        <div className="bg-surface border border-border rounded-xl p-4 mb-6 text-sm">
-          <h3 className="font-mono-tight text-xs uppercase tracking-widest text-muted mb-3">how this stacks up</h3>
-          <div className="grid sm:grid-cols-3 gap-3">
-            <Stat label="checked against" value={`${result.context.candidate_pool_size} enrolled profile${result.context.candidate_pool_size === 1 ? "" : "s"}`} />
-            <Stat label="other close matches" value={result.context.close_matches} />
-            <Stat label="sessions used to train model" value={result.context.total_training_sessions} />
+      {result.detail && result.detail.length > 0 && (
+        <div className="mb-6">
+          <h3 className="font-mono-tight text-xs uppercase tracking-widest text-muted mb-3">how each signal compared</h3>
+          <div className="bg-surface border border-border rounded-xl p-4 space-y-3">
+            {result.detail.map((row) => <ScoreBar key={row.category} label={row.category} value={row.similarity} />)}
           </div>
         </div>
       )}
@@ -107,7 +124,7 @@ export default function BehaviorResult({
             {result.candidates.map((row, index) => (
               <div key={row.profile_id} className="bg-surface border border-border rounded-lg p-3 flex items-center gap-4">
                 <span className="font-mono-tight text-muted">#{index + 1}</span><span className="flex-1">{row.label}</span>
-                <span className="font-mono-tight text-sm text-cyan">{row.certainty}% confidence</span>
+                <span className="font-mono-tight text-sm text-cyan">{row.similarity}% similarity</span>
               </div>
             ))}
           </div>
@@ -144,12 +161,12 @@ export default function BehaviorResult({
         </div>
       )}
 
-      <TechnicalDetails result={result} />
+      <TechnicalDetails result={result} showCertainty={!isOneToOne} />
     </Shell>
   );
 }
 
-function ConfidenceRing({ value, neutral }: { value: number; neutral: boolean }) {
+function ConfidenceRing({ value, threshold, neutral }: { value: number; threshold: number; neutral: boolean }) {
   const size = 72;
   const stroke = 6;
   const radius = (size - stroke) / 2;
@@ -159,6 +176,14 @@ function ConfidenceRing({ value, neutral }: { value: number; neutral: boolean })
   return (
     <svg width={size} height={size} className="shrink-0 -rotate-90">
       <circle cx={size / 2} cy={size / 2} r={radius} stroke="var(--surface-2)" strokeWidth={stroke} fill="none" />
+      {/* A faint tick showing where the match threshold sits, so the ring
+          reads as "how far above/below the bar" rather than an absolute
+          percentage in a vacuum. */}
+      <circle
+        cx={size / 2} cy={size / 2} r={radius} stroke="var(--border)" strokeWidth={stroke}
+        fill="none" strokeDasharray={`1 ${circumference - 1}`}
+        strokeDashoffset={circumference * (1 - Math.min(100, Math.max(0, threshold)) / 100)}
+      />
       <circle
         cx={size / 2} cy={size / 2} r={radius} stroke={color} strokeWidth={stroke} fill="none"
         strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round"
@@ -167,12 +192,15 @@ function ConfidenceRing({ value, neutral }: { value: number; neutral: boolean })
   );
 }
 
-function TechnicalDetails({ result }: { result: VerificationResult }) {
+function TechnicalDetails({ result, showCertainty }: { result: VerificationResult; showCertainty: boolean }) {
   const [open, setOpen] = useState(false);
   const rows: { label: string; value: string }[] = [
     { label: "similarity", value: `${result.best.similarity}%` },
-    { label: "certainty", value: `${result.best.certainty}%` },
   ];
+  // `certainty` is only meaningful with multiple candidates (1:N) — for a
+  // 1:1 check it's mathematically always 100%, so it's omitted there
+  // entirely rather than shown as a confusing, constant number.
+  if (showCertainty) rows.push({ label: "certainty among candidates", value: `${result.best.certainty}%` });
   if (result.best.neural_certainty != null) rows.push({ label: "neural vote", value: `${result.best.neural_certainty}%` });
   if (result.best.personal_neural_certainty != null) rows.push({ label: "personal neural", value: `${result.best.personal_neural_certainty}%` });
   rows.push({ label: "decision threshold", value: `${result.threshold}%` });
@@ -186,7 +214,6 @@ function TechnicalDetails({ result }: { result: VerificationResult }) {
       </button>
       {open && (
         <div className="px-4 pb-4 pt-1 space-y-3">
-          {result.detail && result.detail.map((row) => <ScoreBar key={row.category} label={row.category} value={row.similarity} />)}
           <div className="grid sm:grid-cols-3 gap-2 pt-2">
             {rows.map((row) => (
               <div key={row.label} className="bg-surface-2 rounded-lg px-3 py-2 text-xs flex justify-between">

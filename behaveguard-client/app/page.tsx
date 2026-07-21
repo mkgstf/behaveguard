@@ -264,7 +264,7 @@ export default function Home() {
   }
   if (screen === "login") return <Login onSwitchToRegister={() => setScreen("register")} onBack={reset} />;
   if (screen === "register") return <Register onSwitchToLogin={() => setScreen("login")} onBack={reset} />;
-  if (screen === "claim" && user) return <ClaimProfile onClaimed={(profile) => { setMyProfile(profile); setScreen("landing"); }} onBack={reset} />;
+  if (screen === "claim" && user) return <ClaimProfile onClaimed={(profile) => { setMyProfile(profile); setScreen("landing"); retryProfileCheck(); }} onBack={reset} />;
   if (screen === "create-profile" && user) return <CreateProfile onCreated={onProfileCreated} onBack={reset} />;
   if (screen === "admin") {
     if (!isAdmin) return <AccessDenied onBack={reset} />;

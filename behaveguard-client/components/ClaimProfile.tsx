@@ -33,7 +33,7 @@ export default function ClaimProfile({ onClaimed, onBack }: { onClaimed: (profil
         <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-amber mb-3">link existing profile</div>
         <h2 className="text-2xl font-semibold mb-3">Claim your profile</h2>
         <p className="text-sm text-muted mb-7">
-          If someone gave you a one-time activation link or token for a profile that already exists, paste it below to link it to your account.
+          If Admin gave you a one-time activation link or token for a profile that already exists, paste it below to link it to your account.
         </p>
 
         <form onSubmit={submit} className="space-y-3">

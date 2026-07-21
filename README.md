@@ -143,6 +143,13 @@ uv run behaveguard train
 uv run behaveguard experiment --windows 5 --neural-epochs 25
 uv run behaveguard personal-neural saruman --epochs 25 --windows 4
 uv run behaveguard status
+# IMPORTANT: the test suite TRUNCATEs every table before every test. It runs
+# against whatever DATABASE_URL is set — which defaults to the SAME database
+# your real dev server uses. Point it at a separate database first, or the
+# tests will silently delete all real data (users, profiles, sessions,
+# admin roles, claimed profiles). A safety check in tests/conftest.py will
+# refuse to run otherwise, but set this up properly rather than relying on it:
+export DATABASE_URL=postgresql+psycopg://behaveguard:behaveguard@localhost:5432/behaveguard_test
 uv run pytest
 cd behaveguard-client && npm run lint && npm run build
 ```

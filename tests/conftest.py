@@ -10,6 +10,32 @@ from behaveguard.redis_client import get_redis
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _refuse_to_run_against_a_non_test_database():
+    """Hard safety check, checked once before anything else: `_clean_tables`
+    below TRUNCATEs every table before every single test. `DATABASE_URL`
+    defaults to the exact same Postgres the real dev API server uses, so
+    running `pytest` without ever pointing it at a dedicated database wipes
+    real data — users, profiles, sessions, everything — with no warning.
+    This has actually happened (wiped a promoted-admin account and a claimed
+    profile). Refuse to proceed unless the database name looks like a test
+    database; set DATABASE_URL to something like
+    `.../behaveguard_test` before running tests otherwise.
+    """
+    db_name = engine.url.database or ""
+    if "test" not in db_name.lower():
+        pytest.exit(
+            f"\n\nRefusing to run: DATABASE_URL points at database {db_name!r}, which doesn't "
+            "look like a dedicated test database (its name should contain 'test'). "
+            "The test suite TRUNCATEs every table before every test — running it against "
+            "your real/dev database will silently delete all real data (users, profiles, "
+            "sessions, admin roles, claimed profiles — all of it).\n\n"
+            "Fix: export DATABASE_URL to a separate database first, e.g.:\n"
+            "  export DATABASE_URL=postgresql+psycopg://behaveguard:behaveguard@localhost:5432/behaveguard_test\n",
+            returncode=1,
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _database_schema():
     """Ensure the schema exists once for the whole test session.
 
