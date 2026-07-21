@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-
+from dotenv import load_dotenv
+load_dotenv()   # now actually reads .env into the process environment
 
 DATA_DIR = Path(os.getenv("BEHAVEGUARD_DATA_DIR", "data")).resolve()
 ARTIFACT_DIR = Path(os.getenv("BEHAVEGUARD_ARTIFACT_DIR", "artifacts")).resolve()
@@ -53,6 +54,17 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/ap
 # Where to send the browser after a successful Google login, with tokens in
 # the URL fragment (see api.py's /auth/google/callback for why a fragment).
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Comma-separated list of extra allowed CORS origins, on top of the two
+# localhost defaults below. If `next dev` ever starts on a different port
+# (e.g. 3000 was already taken), requests from that origin are silently
+# blocked by CORS — which looks exactly like "lost my login" from the
+# browser's side, since the request never reaches the API at all. Set this
+# (or FRONTEND_URL above, which is always included) rather than editing code.
+_extra_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+CORS_ORIGINS = list(dict.fromkeys([
+    "http://localhost:3000", "http://127.0.0.1:3000", FRONTEND_URL, *_extra_origins,
+]))
 
 # --- Phase 2: direct-enroll + auto-merge -----------------------------------
 

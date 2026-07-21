@@ -1,10 +1,10 @@
 "use client";
 
 import { MyStats, SessionBehaviorMetrics } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
-// Which metrics to show, in what order, with a rough "good" direction used
-// only for the bar's fill length (not for any pass/fail judgement) — purely
-// a normalization display, computed against this profile's own history.
+const AVERAGE_TYPIST_WPM = 40;
+
 const METRICS: { key: keyof SessionBehaviorMetrics; label: string; unit: string }[] = [
   { key: "wpm", label: "typing speed", unit: "wpm" },
   { key: "dwell_ms", label: "key dwell", unit: "ms" },
@@ -30,7 +30,10 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
 
   const history = stats.history;
   const latest = stats.latest;
+  const card = stats.card;
   const values = (key: keyof SessionBehaviorMetrics) => history.map((row) => row[key] as number | null);
+  const wpm = latest.wpm;
+  const vsAverage = wpm != null ? Math.round(((wpm - AVERAGE_TYPIST_WPM) / AVERAGE_TYPIST_WPM) * 100) : null;
 
   return (
     <div className="min-h-screen px-6 py-10 overflow-y-auto">
@@ -39,9 +42,36 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
         <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-cyan mb-3 mt-8">my stats</div>
         <h2 className="text-3xl font-semibold mb-2">{stats.profile.label}</h2>
         <p className="text-sm text-muted mb-8">
-          {history.length} enrolled session{history.length === 1 ? "" : "s"} · latest sample {new Date(latest.collected_at).toLocaleString()}
+          {history.length} enrolled session{history.length === 1 ? "" : "s"} · latest sample {formatDateTime(latest.collected_at)}
         </p>
 
+        {/* Headline row: the numbers a normal person actually cares about,
+            with plain-language context rather than raw units alone. */}
+        <div className="grid sm:grid-cols-3 gap-4 mb-10">
+          <BigStat
+            label="typing speed"
+            value={wpm == null ? "—" : `${Math.round(wpm)}`}
+            unit="wpm"
+            sub={vsAverage == null ? "—" : vsAverage >= 0 ? `${vsAverage}% faster than the average typist (~${AVERAGE_TYPIST_WPM} wpm)` : `${Math.abs(vsAverage)}% slower than the average typist (~${AVERAGE_TYPIST_WPM} wpm)`}
+            accent="amber"
+          />
+          <BigStat
+            label="profile rank"
+            value={card ? card.rank : "—"}
+            unit=""
+            sub={card ? `better than roughly ${Math.max(1, Math.round(card.overall))}% of ${card.population_size} enrolled profile${card.population_size === 1 ? "" : "s"}` : "keep enrolling to unlock a rank"}
+            accent="cyan"
+          />
+          <BigStat
+            label="click precision"
+            value={latest.click_error_px == null ? "—" : `${Math.round(latest.click_error_px)}`}
+            unit="px off-target"
+            sub="lower is more precise"
+            accent="amber"
+          />
+        </div>
+
+        <h3 className="font-mono-tight text-xs uppercase tracking-widest text-muted mb-4">session history</h3>
         <div className="space-y-5 mb-10">
           {METRICS.map((metric) => (
             <MetricRow key={metric.key} label={metric.label} unit={metric.unit} history={values(metric.key)} />
@@ -54,9 +84,22 @@ export default function MyStatsPage({ stats, onBack }: { stats: MyStats | null; 
 
 function BackLink({ onBack }: { onBack: () => void }) {
   return (
-    <button onClick={onBack} className="text-sm text-muted font-mono-tight py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">
+    <button onClick={onBack} className="cursor-pointer text-sm text-muted font-mono-tight py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">
       ← home
     </button>
+  );
+}
+
+function BigStat({ label, value, unit, sub, accent }: { label: string; value: string; unit: string; sub: string; accent: "amber" | "cyan" }) {
+  return (
+    <div className="bg-surface border border-border rounded-xl p-5">
+      <div className="text-[10px] uppercase tracking-wider text-muted mb-2">{label}</div>
+      <div className={`font-mono-tight text-3xl tabular-nums ${accent === "amber" ? "text-amber" : "text-cyan"}`}>
+        {value}
+        {unit && <span className="text-sm text-muted ml-1.5">{unit}</span>}
+      </div>
+      <div className="text-xs text-muted mt-2 leading-relaxed">{sub}</div>
+    </div>
   );
 }
 

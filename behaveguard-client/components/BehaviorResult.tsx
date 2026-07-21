@@ -1,6 +1,7 @@
 "use client";
 
 import { EnrollmentResult, VerificationResult, SessionBehaviorMetrics } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 type RetrainState = "idle" | "loading" | "done" | "error";
 
@@ -43,9 +44,26 @@ export default function BehaviorResult({
       </Shell>
     );
   }
-  const borderline = result.match && !result.auto_enrolled;
+
+  // A 1:1 self-check (verifying against your own profile) can only ever add
+  // your own session as training data, whatever the outcome — so the
+  // retrain opt-in is offered whenever this session wasn't already folded
+  // in automatically, match or not, rather than only for borderline matches.
+  const canOfferRetrain = result.candidates.length === 1 && !result.auto_enrolled;
+  const neutral = !result.match;
+
   return (
-    <Shell onHome={onHome} accent="cyan" eyebrow={result.candidates.length === 1 ? "1:1 verification" : "1:N identification"} title={result.match ? `${result.best.label} is the closest verified match` : "No confident match"}>
+    <Shell
+      onHome={onHome}
+      accent={neutral ? "neutral" : "cyan"}
+      eyebrow={result.candidates.length === 1 ? "1:1 verification" : "1:N identification"}
+      title={result.match ? `${result.best.label} is the closest verified match` : "This session didn't confidently match"}
+    >
+      {neutral && (
+        <p className="text-sm text-muted mb-6 -mt-4">
+          That&apos;s a normal outcome, not a failure — behavioral rhythm shifts session to session. Nothing was recorded against you either way.
+        </p>
+      )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
         <Stat label="similarity" value={`${result.best.similarity}%`} />
         <Stat label="certainty" value={`${result.best.certainty}%`} />
@@ -89,10 +107,12 @@ export default function BehaviorResult({
           This confident match was automatically folded in as an additional enrollment sample — your profile keeps improving every time you verify successfully.
         </div>
       )}
-      {borderline && onRetrain && (
+      {canOfferRetrain && onRetrain && (
         <div className="mt-7 bg-amber/10 border border-amber/30 rounded-xl p-4">
           <p className="text-sm text-amber mb-3">
-            This matched, but wasn&apos;t confident enough to fold in automatically. If this really was you, adding it as training data can help sharpen future verifications.
+            {result.match
+              ? "This matched, but wasn't confident enough to fold in automatically. If this really was you, adding it as training data can help sharpen future verifications."
+              : "This wasn't added to your profile automatically. If this really was you typing, you can add it anyway — it can only ever help future checks recognize you."}
           </p>
           <button
             onClick={onRetrain}
@@ -104,16 +124,17 @@ export default function BehaviorResult({
           {retrainState === "error" && <p className="text-danger text-xs mt-2">Couldn&apos;t add this sample — try again from the home screen.</p>}
         </div>
       )}
-      <p className="text-xs text-muted mt-5">Decision threshold {result.threshold}% · top-candidate margin {result.margin}% · model {result.model_version.slice(0, 19)}</p>
+      <p className="text-xs text-muted mt-5">Decision threshold {result.threshold}% · top-candidate margin {result.margin}% · model trained {formatDateTime(result.model_version)}</p>
     </Shell>
   );
 }
 
-function Shell({ children, onHome, accent, eyebrow, title }: { children: React.ReactNode; onHome: () => void; accent: "amber" | "cyan"; eyebrow: string; title: string }) {
+function Shell({ children, onHome, accent, eyebrow, title }: { children: React.ReactNode; onHome: () => void; accent: "amber" | "cyan" | "neutral"; eyebrow: string; title: string }) {
+  const accentClass = accent === "amber" ? "text-amber" : accent === "cyan" ? "text-cyan" : "text-muted";
   return (
     <div className="min-h-screen px-6 py-10 overflow-y-auto">
       <div className="max-w-3xl mx-auto fade-up">
-        <div className={`font-mono-tight text-xs uppercase tracking-[0.3em] mb-3 ${accent === "amber" ? "text-amber" : "text-cyan"}`}>{eyebrow}</div>
+        <div className={`font-mono-tight text-xs uppercase tracking-[0.3em] mb-3 ${accentClass}`}>{eyebrow}</div>
         <h2 className="text-3xl font-semibold mb-8">{title}</h2>
         {children}
         <button onClick={onHome} className="cursor-pointer mt-9 bg-text text-bg rounded-lg px-7 py-3.5 font-mono-tight text-xs uppercase tracking-widest">back home</button>

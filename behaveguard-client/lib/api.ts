@@ -112,10 +112,19 @@ export interface SessionBehaviorMetrics {
   tremor_px: number | null;
 }
 
+export interface MyStatsCard {
+  overall: number;
+  rank: "S" | "A" | "B" | "C" | "D";
+  ratings: Record<string, number>;
+  missing_ratings: string[];
+  population_size: number;
+}
+
 export interface MyStats {
   profile: Profile;
   latest: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics) | null;
   history: ({ session_id: string; collected_at: string } & SessionBehaviorMetrics)[];
+  card: MyStatsCard | null;
 }
 
 export interface EnrollmentResult {

@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import { useAuth, googleLoginUrl } from "@/lib/auth";
+import { useToast } from "@/lib/toast";
 
 export default function Login({ onSwitchToRegister, onBack }: { onSwitchToRegister: () => void; onBack: () => void }) {
   const { loginWithPassword } = useAuth();
+  const { showToast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -16,6 +18,7 @@ export default function Login({ onSwitchToRegister, onBack }: { onSwitchToRegist
     setLoading(true);
     try {
       await loginWithPassword(email.trim(), password);
+      showToast("Logged in successfully", "success");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Login failed");
     } finally {
@@ -24,9 +27,9 @@ export default function Login({ onSwitchToRegister, onBack }: { onSwitchToRegist
   }
 
   return (
-    <div className="flex-1 flex items-center justify-center px-6">
+    <div className="min-h-dvh flex justify-center px-6 pt-[12vh] pb-16 overflow-y-auto">
       <div className="max-w-sm w-full fade-up">
-        <button onClick={onBack} className="text-xs text-muted font-mono-tight mb-8 hover:text-text">← home</button>
+        <button onClick={onBack} className="text-sm text-muted font-mono-tight mb-8 py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">← home</button>
         <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-cyan mb-3">welcome back</div>
         <h2 className="text-2xl font-semibold mb-7">Log in</h2>
 

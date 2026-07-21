@@ -22,11 +22,19 @@ import ProfileSetup from "@/components/ProfileSetup";
 import BehaviorResult from "@/components/BehaviorResult";
 import AdminDashboard from "@/components/AdminDashboard";
 import MyStatsPage from "@/components/MyStatsPage";
+import NavBar from "@/components/NavBar";
 
 // Screens not present in lib/types.ts's Screen union yet — extending inline
 // keeps this additive rather than requiring every existing screen name to
 // be touched.
 type ExtendedScreen = Screen | "login" | "register" | "claim" | "create-profile" | "stats";
+
+// Screens safe to restore from a URL on a cold page load. Mid-task screens
+// (consent/keyboard/mouse-*) and "result" are deliberately excluded — their
+// state (collected keystroke/mouse refs, the verification result) only ever
+// lived in memory, so pretending to resume them after a hard refresh would
+// just break rather than help. Landing is always a safe fallback instead.
+const RESTORABLE_SCREENS: ExtendedScreen[] = ["landing", "login", "register", "claim", "create-profile", "admin", "stats", "setup"];
 
 export default function Home() {
   const { user, loading: authLoading } = useAuth();
@@ -70,7 +78,7 @@ export default function Home() {
     rawSetScreen(next);
     screenRef.current = next;
     if (!isPopping.current && typeof window !== "undefined") {
-      window.history.pushState({ screen: next }, "");
+      window.history.pushState({ screen: next }, "", `?screen=${next}`);
     }
   }
 
@@ -86,7 +94,17 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.history.replaceState({ screen: "landing" }, "");
+    const urlScreen = new URLSearchParams(window.location.search).get("screen") as ExtendedScreen | null;
+    const restored: ExtendedScreen = urlScreen && RESTORABLE_SCREENS.includes(urlScreen) ? urlScreen : "landing";
+    window.history.replaceState({ screen: restored }, "", `?screen=${restored}`);
+    if (restored !== "landing") {
+      isPopping.current = true;
+      Promise.resolve().then(() => {
+        rawSetScreen(restored);
+        screenRef.current = restored;
+        isPopping.current = false;
+      });
+    }
     function onPopState(event: PopStateEvent) {
       const prevScreen = screenRef.current;
       const nextScreen = ((event.state as { screen?: ExtendedScreen } | null)?.screen) || "landing";
@@ -164,6 +182,7 @@ export default function Home() {
   function beginVerifySelf() {
     if (profileCheck === "error" || profileCheck === "loading") { retryProfileCheck(); return; }
     if (!myProfile) { setScreen("create-profile"); return; }
+    if (myProfile.enrollment_count === 0) { beginEnroll(); return; }
     setMode("verify"); setSelected([myProfile]); sessionStart.current = performance.now(); setScreen("consent");
   }
   function beginIdentify() { setMode("identify"); setScreen("setup"); }
@@ -225,6 +244,17 @@ export default function Home() {
     }
   }
 
+  const showNavBar = Boolean(user) && !["login", "register", "claim", "create-profile", "admin"].includes(screen);
+  const navBar = showNavBar ? (
+    <NavBar
+      isAdmin={isAdmin}
+      isTrained={Boolean(myProfile) && myProfile!.enrollment_count > 0}
+      onClaim={() => setScreen("claim")}
+      onAdmin={() => setScreen("admin")}
+      onStats={() => setScreen("stats")}
+    />
+  ) : null;
+
   if (authLoading) {
     return <div className="min-h-screen flex items-center justify-center text-muted text-sm">loading…</div>;
   }
@@ -238,37 +268,41 @@ export default function Home() {
   }
   if (screen === "stats") {
     if (!user) return <Login onSwitchToRegister={() => setScreen("register")} onBack={reset} />;
-    return <MyStatsPage stats={myStats} onBack={reset} />;
+    return <>{navBar}<MyStatsPage stats={myStats} onBack={reset} /></>;
   }
   if (screen === "setup") {
     if (!user) return <Login onSwitchToRegister={() => setScreen("register")} onBack={reset} />;
     if (mode === "identify" && !isAdmin) return <AccessDenied onBack={reset} />;
-    return <ProfileSetup kind={mode === "enroll" ? "enroll" : "identify"} onReady={ready} onBack={reset} />;
+    return <>{navBar}<ProfileSetup kind={mode === "enroll" ? "enroll" : "identify"} onReady={ready} onBack={reset} /></>;
   }
   if (screen === "result" && result) {
     return (
-      <BehaviorResult
-        result={result}
-        onHome={reset}
-        enrollmentStats={enrollmentStats}
-        onRetrain={retrainFromLastVerification}
-        retrainState={retrainState}
-      />
+      <>
+        {navBar}
+        <BehaviorResult
+          result={result}
+          onHome={reset}
+          enrollmentStats={enrollmentStats}
+          onRetrain={retrainFromLastVerification}
+          retrainState={retrainState}
+        />
+      </>
     );
   }
 
   const showRail = !["landing", "done", "setup", "admin", "result"].includes(screen);
   const quickVerification = mode !== "enroll";
   return <div className="flex flex-col min-h-screen">
+    {navBar}
     {showRail && (
-      <div className="w-full max-w-2xl mx-auto px-6 pt-6 flex items-center gap-4">
+      <div className="relative w-full pt-6 px-4">
         <button
           onClick={cancelTask}
-          className="shrink-0 text-sm text-muted font-mono-tight py-2.5 px-3 -ml-3 hover:text-danger transition inline-flex items-center gap-1.5"
+          className="absolute left-4 top-6 z-20 text-sm text-muted font-mono-tight py-2.5 px-3 hover:text-danger transition inline-flex items-center gap-1.5"
         >
           ← cancel
         </button>
-        <div className="flex-1"><StageRail current={screen as Screen} /></div>
+        <div className="w-full max-w-2xl mx-auto"><StageRail current={screen as Screen} /></div>
       </div>
     )}
     {screen === "landing" && (
@@ -276,11 +310,11 @@ export default function Home() {
         onEnroll={beginEnroll}
         onVerifySelf={beginVerifySelf}
         onIdentify={beginIdentify}
-        onAdmin={() => setScreen("admin")}
         onLogin={() => setScreen("login")}
         onRegister={() => setScreen("register")}
         onClaim={() => setScreen("claim")}
         hasOwnProfile={Boolean(myProfile)}
+        isTrained={Boolean(myProfile) && myProfile!.enrollment_count > 0}
         profileCheck={profileCheck}
         onRetryProfileCheck={retryProfileCheck}
         myProfileId={myProfile?.id ?? null}

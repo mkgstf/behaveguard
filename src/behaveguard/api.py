@@ -22,7 +22,7 @@ from .auth import (
     require_platform_admin,
     verify_password,
 )
-from .config import ARTIFACT_DIR, AUTO_ENROLLMENT_SIMILARITY_THRESHOLD, FRONTEND_URL, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
+from .config import ARTIFACT_DIR, AUTO_ENROLLMENT_SIMILARITY_THRESHOLD, CORS_ORIGINS, FRONTEND_URL, PERSONAL_NEURAL_DIR, PERSONAL_NEURAL_REPORT_PATH
 from .database import (
     add_session, claim_profile, create_profile, delete_profile,
     get_active_refresh_token, get_profile, get_profile_by_user, get_review_sample_material,
@@ -94,7 +94,7 @@ class SecurityAlertAction(BaseModel):
 app = FastAPI(title="BehaveGuard API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -288,7 +288,19 @@ def my_profile_stats(current_user: CurrentUser = Depends(get_current_user)) -> d
         for row in sessions
     ]
     latest = history[-1] if history else None
-    return {"profile": profile, "latest": latest, "history": history}
+    card = None
+    if history:
+        active_profiles = list_profiles(include_blacklisted=False)
+        own_card = next((c for c in build_character_cards(active_profiles) if c["id"] == profile["id"]), None)
+        if own_card is not None:
+            card = {
+                "overall": own_card["overall"],
+                "rank": own_card["rank"],
+                "ratings": own_card["ratings"],
+                "missing_ratings": own_card["missing_ratings"],
+                "population_size": len(active_profiles),
+            }
+    return {"profile": profile, "latest": latest, "history": history, "card": card}
 
 
 @app.patch("/api/v1/profiles/{profile_id}")

@@ -31,7 +31,7 @@ export default function Register({ onSwitchToLogin, onBack }: { onSwitchToLogin:
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-6">
+    <div className="min-h-dvh flex justify-center px-6 pt-[12vh] pb-16 overflow-y-auto">
       <div className="max-w-sm w-full fade-up">
         <button onClick={onBack} className="text-sm text-muted font-mono-tight mb-8 py-2 -ml-1 pl-1 pr-3 hover:text-text inline-flex items-center gap-1.5">← home</button>
         <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-amber mb-3">get started</div>

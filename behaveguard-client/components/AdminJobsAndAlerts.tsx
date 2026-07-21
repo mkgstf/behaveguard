@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, JobStatus, SecurityAlert } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 const JOB_STATUS_COLOR: Record<JobStatus["status"], string> = {
   queued: "text-muted",
@@ -97,7 +98,7 @@ export default function AdminJobsAndAlerts() {
                     <span className={`font-mono-tight uppercase ${ALERT_SEVERITY_COLOR[alert.severity] || "text-muted"}`}>
                       {alert.kind.replaceAll("_", " ")}
                     </span>
-                    <span className="text-muted">{new Date(alert.created_at).toLocaleString()}</span>
+                    <span className="text-muted">{formatDateTime(alert.created_at)}</span>
                   </div>
                   <div className="text-muted mt-1 font-mono-tight truncate">{JSON.stringify(alert.details)}</div>
                   <div className="flex gap-2 mt-2">

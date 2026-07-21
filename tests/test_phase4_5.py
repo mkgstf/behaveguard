@@ -100,6 +100,26 @@ def test_my_profile_stats_returns_own_session_history_only():
     assert "wpm" in body["latest"]
 
 
+def test_my_profile_stats_card_has_no_other_profile_identity():
+    headers = _register("stats-card-user@example.com")
+    profile = client.post("/api/v1/profiles", json={"label": "stats-card-profile"}, headers=headers).json()
+    payload = _sample_payload(2)
+    features = extract_features(payload)
+    d.add_session(profile["id"], payload, features)
+    retrain_model()
+
+    response = client.get("/api/v1/profiles/me/stats", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["card"] is not None
+    assert body["card"]["rank"] in ("S", "A", "B", "C", "D")
+    assert 0 <= body["card"]["overall"] <= 100
+    assert "population_size" in body["card"]
+    # Never leaks another profile's identity — only this profile's own numbers.
+    assert "label" not in body["card"]
+    assert "id" not in body["card"]
+
+
 def test_verify_response_includes_privacy_safe_context_block():
     headers = _register("ctx-user@example.com")
     payload = _sample_payload(1)

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, JobStatus, SecurityAlert } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 const ALERT_LABELS: Record<SecurityAlert["kind"], string> = {
   replay_suspected: "exact-payload replay",
@@ -87,7 +88,7 @@ export default function JobsAndAlerts() {
                 {alert.severity}
               </span>
               <span className="flex-1 min-w-40">{ALERT_LABELS[alert.kind]}</span>
-              <span className="text-muted">{new Date(alert.created_at).toLocaleString()}</span>
+              <span className="text-muted">{formatDateTime(alert.created_at)}</span>
               <button
                 disabled={busy === alert.id}
                 onClick={() => void resolveAlert(alert.id, "ack")}
