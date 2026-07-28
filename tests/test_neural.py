@@ -1,6 +1,7 @@
+import numpy as np
 import torch
 
-from behaveguard.neural import BehavioralSequenceNet
+from behaveguard.neural import BehavioralSequenceNet, session_sequences
 from behaveguard.personal_verifier import personal_folds
 from behaveguard.training import (
     _eligible_rows,
@@ -15,6 +16,43 @@ def test_neural_model_shapes():
     embedding, logits = model(torch.zeros(2, 32, 6), torch.zeros(2, 64, 6), torch.zeros(2, 12))
     assert embedding.shape == (2, 128)
     assert logits.shape == (2, 3)
+
+
+def test_mouse_sequence_derives_deltas_from_absolute_coordinates():
+    _, mouse = session_sequences(
+        {
+            "mouse": {
+                "passive_points": [
+                    {"x": 10, "y": 20, "ts": 100},
+                    {"x": 40, "y": 60, "ts": 200},
+                ]
+            }
+        },
+        key_length=4,
+        mouse_length=4,
+    )
+
+    assert np.allclose(mouse[1, :2], [0.3, 0.4])
+    assert mouse[1, 3] == 0.5
+
+
+def test_neural_embeddings_ignore_trailing_padding():
+    torch.manual_seed(7)
+    model = BehavioralSequenceNet(feature_dim=3, class_count=2).eval()
+    short_keyboard = torch.zeros(1, 8, 6)
+    short_mouse = torch.zeros(1, 8, 6)
+    short_keyboard[:, :2, -1] = 1
+    short_mouse[:, :2, -1] = 1
+    long_keyboard = torch.zeros(1, 64, 6)
+    long_mouse = torch.zeros(1, 64, 6)
+    long_keyboard[:, :2] = short_keyboard[:, :2]
+    long_mouse[:, :2] = short_mouse[:, :2]
+    features = torch.zeros(1, 3)
+
+    short_embedding, _ = model(short_keyboard, short_mouse, features)
+    long_embedding, _ = model(long_keyboard, long_mouse, features)
+
+    assert torch.allclose(short_embedding, long_embedding, atol=1e-6)
 
 
 def test_personal_folds_never_mix_held_parent_sessions():

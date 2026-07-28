@@ -21,7 +21,7 @@ from .config import (
 from .database import all_training_rows, get_profile_by_label
 from .experiments import window_session
 from .features import extract_features, feature_vector
-from .neural import BehavioralSequenceNet, session_sequences
+from .neural import NEURAL_FORMAT_VERSION, BehavioralSequenceNet, session_sequences
 
 
 def personal_folds(rows: list[dict[str, Any]], target_profile_id: str) -> list[dict[str, Any]]:
@@ -213,6 +213,7 @@ def train_personal_verifier(label: str, epochs: int = 25, window_count: int = 4,
     artifact_path = _artifact_path(profile["id"])
     report_path = _report_path(profile["id"])
     torch.save({
+        "format_version": NEURAL_FORMAT_VERSION,
         "state_dict": copy.deepcopy(final_model.state_dict()), "feature_names": final_names,
         "scaler": {"center": final_scaler.center_.tolist(), "scale": final_scaler.scale_.tolist()},
         "target_profile_id": profile["id"], "target_label": profile["label"],
@@ -230,7 +231,12 @@ def score_personal_verifier(payload: dict[str, Any], profile_id: str) -> dict[st
         _migrate_legacy_artifact()
     if not path.exists():
         return None
-    artifact, model, scaler = _load_personal_artifact(str(path), path.stat().st_mtime)
+    try:
+        artifact, model, scaler = _load_personal_artifact(
+            str(path), path.stat().st_mtime
+        )
+    except (KeyError, RuntimeError, ValueError, OSError):
+        return None
     if artifact["target_profile_id"] != profile_id:
         return None
     names = artifact["feature_names"]
@@ -267,6 +273,8 @@ def _migrate_legacy_artifact() -> None:
 @lru_cache(maxsize=16)
 def _load_personal_artifact(path_string: str, modified_at: float):
     artifact = torch.load(path_string, map_location="cpu", weights_only=False)
+    if artifact.get("format_version") != NEURAL_FORMAT_VERSION:
+        raise ValueError("Personal neural checkpoint representation is incompatible")
     names = artifact["feature_names"]
     scaler = RobustScaler()
     scaler.center_ = np.asarray(artifact["scaler"]["center"], dtype=float)

@@ -20,7 +20,7 @@ from .calibration import (
 from .config import ARTIFACT_DIR, MODEL_PATH, NEURAL_PATH, ensure_directories
 from .database import all_training_rows, profile_sessions
 from .features import detailed_comparison, extract_features, feature_vector
-from .neural import BehavioralSequenceNet, session_sequences
+from .neural import NEURAL_FORMAT_VERSION, BehavioralSequenceNet, session_sequences
 from .personal_verifier import score_personal_verifier
 
 
@@ -62,6 +62,8 @@ def behavioral_drift(vector: np.ndarray, profile: dict[str, Any]) -> dict[str, A
 @lru_cache(maxsize=2)
 def _load_neural_artifact(modified_at: float):
     checkpoint = torch.load(NEURAL_PATH, map_location="cpu", weights_only=False)
+    if checkpoint.get("format_version") != NEURAL_FORMAT_VERSION:
+        raise ValueError("Neural checkpoint representation is incompatible")
     model = BehavioralSequenceNet(len(checkpoint["feature_names"]), len(checkpoint["classes"]))
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
@@ -254,7 +256,9 @@ def model_status() -> dict[str, Any]:
         try:
             checkpoint = torch.load(NEURAL_PATH, map_location="cpu", weights_only=False)
             neural_profiles = len(checkpoint.get("classes", []))
-            if checkpoint.get("scaler") and checkpoint.get("feature_names"):
+            if checkpoint.get("format_version") != NEURAL_FORMAT_VERSION:
+                neural_status = "incompatible artifact (retraining required)"
+            elif checkpoint.get("scaler") and checkpoint.get("feature_names"):
                 neural_ready = True
                 neural_status = (
                     "experimental window-trained artifact"

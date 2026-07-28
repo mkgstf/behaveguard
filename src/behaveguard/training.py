@@ -20,7 +20,7 @@ from .database import (
 )
 from .db.models import ModelVersion
 from .features import feature_vector
-from .neural import BehavioralSequenceNet, session_sequences
+from .neural import NEURAL_FORMAT_VERSION, BehavioralSequenceNet, session_sequences
 
 
 MIN_SESSIONS_PER_NEURAL_PROFILE = 2
@@ -177,7 +177,7 @@ def _checkpoint(
     temperature: float = 1.0,
 ) -> dict[str, Any]:
     return {
-        "format_version": 2,
+        "format_version": NEURAL_FORMAT_VERSION,
         "state_dict": copy.deepcopy(model.state_dict()),
         "classes": classes,
         "feature_names": names,
@@ -314,6 +314,8 @@ def _fit_temperature(
 def _evaluate_checkpoint(
     checkpoint: dict[str, Any], rows: list[dict[str, Any]]
 ) -> dict[str, float]:
+    if checkpoint.get("format_version") != NEURAL_FORMAT_VERSION:
+        raise ValueError("Neural checkpoint representation is incompatible")
     names = list(checkpoint["feature_names"])
     classes = [str(value) for value in checkpoint["classes"]]
     class_index = {value: index for index, value in enumerate(classes)}
