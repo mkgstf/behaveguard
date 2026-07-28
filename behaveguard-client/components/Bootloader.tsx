@@ -12,7 +12,7 @@ const FACTS = [
   "Cursor movement has a signature \"jerk\" profile — how acceleration itself changes over time.",
 ];
 
-const MAX_WAIT_MS = 30_000;
+const MAX_WAIT_MS = 45_000;
 const POLL_INTERVAL_MS = 1500;
 // If the very first ping resolves faster than this, skip the loader
 // entirely — graceful entry with no visible delay when already warm.
@@ -78,9 +78,9 @@ export default function Bootloader({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     if (state !== "waking") return;
-    Promise.resolve().then(() => setSecondsLeft(30));
+    Promise.resolve().then(() => setSecondsLeft(45));
     const tick = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
-    const fact = setInterval(() => setFactIdx((i) => (i + 1) % FACTS.length), 5500);
+    const fact = setInterval(() => setFactIdx((i) => (i + 1) % FACTS.length), 7500);
     return () => { clearInterval(tick); clearInterval(fact); };
   }, [state]);
 
@@ -107,7 +107,7 @@ export default function Bootloader({ children }: { children: React.ReactNode }) 
           <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-danger mb-4">connection failed</div>
           <h2 className="text-xl font-semibold mb-3">Couldn&apos;t reach the server</h2>
           <p className="text-sm text-muted mb-7 leading-relaxed">
-            The backend didn&apos;t respond after 30 seconds. It may be waking up from a cold start, or it may genuinely be down — check your connection and try again.
+            The backend didn&apos;t respond after 45 seconds. It may be waking up from a cold start, or it may genuinely be down — check your connection and try again.
           </p>
           <button
             onClick={() => setAttempt((n) => n + 1)}
@@ -133,7 +133,7 @@ export default function Bootloader({ children }: { children: React.ReactNode }) 
           ~{secondsLeft}s left
         </h2>
         <p className="text-sm text-muted leading-relaxed min-h-[3.5rem] transition-opacity">
-          {FACTS[factIdx]}
+          Fun fact about typing: {FACTS[factIdx]}
         </p>
       </div>
     </div>

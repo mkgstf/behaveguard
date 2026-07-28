@@ -9,9 +9,9 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const spaceMono = Space_Mono({ subsets: ["latin"], weight: ["400", "700"], variable: "--font-space-mono" });
 
 export const metadata: Metadata = {
-  title: "BehaveGuard — Behavioral Pattern Test",
+  title: "BehaveGuard",
   description:
-    "A short typing and mouse-movement test used to study behavioral biometrics.",
+    "A typing and mouse-movement test used to study behavioral biometrics.",
 };
 
 export default function RootLayout({
