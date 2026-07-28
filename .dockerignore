@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+data/
+artifacts/
+*.xlsx
+*.xls
+behaveguard-client/
+docs/
+*.md
+!README.md

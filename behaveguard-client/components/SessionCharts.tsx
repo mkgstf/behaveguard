@@ -12,8 +12,12 @@ import {
 
 const axisStyle = { fontSize: 11, fontFamily: "var(--font-mono)", fill: "var(--muted)" };
 
-export default function Analytics({ data, onFinish }: { data: SessionData; onFinish: () => void }) {
-
+/** Keyboard + mouse chart panels for a single session — the same charts
+ * originally built for a standalone "Analytics" screen, now embedded
+ * directly into enroll/verify/add-sample result screens instead (no
+ * separate header or "finish" button of its own; the parent Shell already
+ * has both). */
+export default function SessionCharts({ data }: { data: SessionData }) {
   const kb = data.keyboard.events;
   const dwell = useMemo(() => histogram(dwellTimes(kb)), [kb]);
   const flight = useMemo(() => histogram(flightTimes(kb)), [kb]);
@@ -37,14 +41,14 @@ export default function Analytics({ data, onFinish }: { data: SessionData; onFin
   const velocitySeries = dot.velocities.map((v, i) => ({ trial: i + 1, v: Math.round(v) }));
 
   const maxDigraphMs = Math.max(...digraphs.map((d) => d.avg_ms), 1);
+  const hasKeyboard = kb.length > 0;
+  const hasMouse = data.mouse.dot_trials.length > 0;
+
+  if (!hasKeyboard && !hasMouse) return null;
 
   return (
-    <div className="flex-1 px-6 py-8 overflow-y-auto">
-      <div className="max-w-4xl mx-auto fade-up">
-        <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-muted mb-2">results</div>
-        <h2 className="text-2xl font-semibold mb-8">Here&apos;s how you type and move</h2>
-
-        {/* KEYBOARD PANEL */}
+    <div>
+      {hasKeyboard && (
         <Panel title="keyboard" accent="amber">
           <StatRow
             stats={[
@@ -90,28 +94,30 @@ export default function Analytics({ data, onFinish }: { data: SessionData; onFin
             </ChartBlock>
           </div>
 
-          <ChartBlock title="top 10 digraphs · avg ms between keys">
-            <div className="space-y-1.5">
-              {digraphs.map((d) => (
-                <div key={d.pair} className="flex items-center gap-3">
-                  <span className="font-mono-tight text-xs text-muted w-10 shrink-0">{d.pair}</span>
-                  <div className="flex-1 h-3 bg-surface-2 rounded-sm overflow-hidden">
-                    <div
-                      className="h-full bg-amber rounded-sm"
-                      style={{ width: `${(d.avg_ms / maxDigraphMs) * 100}%` }}
-                    />
+          {digraphs.length > 0 && (
+            <ChartBlock title="top digraphs · avg ms between keys">
+              <div className="space-y-1.5">
+                {digraphs.map((d) => (
+                  <div key={d.pair} className="flex items-center gap-3">
+                    <span className="font-mono-tight text-xs text-muted w-10 shrink-0">{d.pair}</span>
+                    <div className="flex-1 h-3 bg-surface-2 rounded-sm overflow-hidden">
+                      <div
+                        className="h-full bg-amber rounded-sm"
+                        style={{ width: `${(d.avg_ms / maxDigraphMs) * 100}%` }}
+                      />
+                    </div>
+                    <span className="font-mono-tight text-xs text-muted w-12 text-right shrink-0">
+                      {Math.round(d.avg_ms)}ms
+                    </span>
                   </div>
-                  <span className="font-mono-tight text-xs text-muted w-12 text-right shrink-0">
-                    {Math.round(d.avg_ms)}ms
-                  </span>
-                </div>
-              ))}
-              {digraphs.length === 0 && <p className="text-xs text-muted">not enough data</p>}
-            </div>
-          </ChartBlock>
+                ))}
+              </div>
+            </ChartBlock>
+          )}
         </Panel>
+      )}
 
-        {/* MOUSE PANEL */}
+      {hasMouse && (
         <Panel title="mouse" accent="cyan">
           <StatRow
             stats={[
@@ -160,17 +166,7 @@ export default function Analytics({ data, onFinish }: { data: SessionData; onFin
             </ResponsiveContainer>
           </ChartBlock>
         </Panel>
-
-        <div className="flex flex-col items-center gap-3 mt-10 pb-6">
-          <span className="text-xs text-muted font-mono-tight">session recorded</span>
-          <button
-            onClick={onFinish}
-            className="font-mono-tight text-sm uppercase tracking-wider bg-text text-bg px-8 py-3 rounded-md hover:brightness-90 transition active:scale-[0.98]"
-          >
-            finish →
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -186,7 +182,7 @@ const tooltipStyle = {
 
 function Panel({ title, accent, children }: { title: string; accent: "amber" | "cyan"; children: React.ReactNode }) {
   return (
-    <div className="mb-10">
+    <div className="mb-8">
       <div className="flex items-center gap-2 mb-4">
         <div className={`w-2 h-2 rounded-full ${accent === "amber" ? "bg-amber" : "bg-cyan"}`} />
         <h3 className="font-mono-tight text-sm uppercase tracking-widest text-text">{title}</h3>

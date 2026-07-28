@@ -6,6 +6,7 @@ __pycache__/
 data/
 artifacts/
 *.pyc
+.env
 
 # Raw behavioral-biometric exports stay local. Use a synthetic or explicitly
 # consented workbook when reproducing the import pipeline.

@@ -17,9 +17,7 @@ def test_typing_and_mouse_metrics():
     assert metrics["mouse_speed_pxs"] == 100
 
 
-def test_identification_run_comparison_matches_original_profile(tmp_path, monkeypatch):
-    monkeypatch.setattr(database, "DB_PATH", tmp_path / "comparison.db")
-    database.init_db()
+def test_identification_run_comparison_matches_original_profile():
     profile = database.create_profile("original")
     session = {
         "keyboard": {"events": [

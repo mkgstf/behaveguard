@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AdminAnalytics, api, ReviewComparison } from "@/lib/api";
+import { formatDate, formatDateTime } from "@/lib/format";
+import JobsAndAlerts from "@/components/JobsAndAlerts";
+import AdminJobsAndAlerts from "@/components/AdminJobsAndAlerts";
 
 export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [data, setData] = useState<AdminAnalytics | null>(null);
@@ -13,10 +16,28 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
   const [comparisonBusy, setComparisonBusy] = useState("");
   const [reviewBusy, setReviewBusy] = useState("");
   const [trainingMessage, setTrainingMessage] = useState("");
+  const [claimTokens, setClaimTokens] = useState<Record<string, string>>({});
+  const [claimTokenBusy, setClaimTokenBusy] = useState("");
+  const [claimTokenError, setClaimTokenError] = useState<Record<string, string>>({});
   const load = useCallback(() => api.analytics().then(setData).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
   async function blacklist(id: string, value: boolean) { await api.blacklist(id, value); await load(); }
   async function remove(id: string, label: string) { if (window.confirm(`Delete ${label} and all enrollment sessions?`)) { await api.deleteProfile(id); await load(); } }
+  async function generateClaimToken(id: string) {
+    setClaimTokenBusy(id);
+    setClaimTokenError((current) => ({ ...current, [id]: "" }));
+    try {
+      const result = await api.adminClaimToken(id);
+      setClaimTokens((current) => ({ ...current, [id]: result.token }));
+    } catch (reason) {
+      // Most common cause: this profile already has an owner — claim
+      // tokens are only for pre-existing/legacy (e.g. xlsx-imported)
+      // profiles with no account linked yet, not self-enrolled ones.
+      setClaimTokenError((current) => ({ ...current, [id]: reason instanceof Error ? reason.message : "Could not generate a claim token" }));
+    } finally {
+      setClaimTokenBusy("");
+    }
+  }
   async function review(id: string, action: "approve" | "reject", fallbackProfileId?: string | null) {
     setReviewBusy(id);
     setError("");
@@ -28,7 +49,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
     setReviewBusy("retrain"); setTrainingMessage(""); setError("");
     try {
       const trained = await api.retrain();
-      setTrainingMessage(`Model rebuilt with ${trained.classical.session_count} sessions across ${trained.classical.profile_count} profiles; ${trained.included_review_samples} approved test sample${trained.included_review_samples === 1 ? "" : "s"} marked trained${trained.neural.trained ? "; neural model updated" : "; neural model unchanged"}.`);
+      setTrainingMessage(`Model rebuilt with ${trained.classical.session_count} sessions across ${trained.classical.profile_count} profiles; ${trained.included_review_samples} approved test sample${trained.included_review_samples === 1 ? "" : "s"} marked trained. Neural fusion retrain queued (job ${trained.neural_retrain_job_id.slice(0, 8)}…) — check Jobs below for its outcome.`);
       await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Retraining failed"); }
     finally { setReviewBusy(""); }
@@ -81,7 +102,7 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
           const runComparison = reviewComparisons[sample.id] || sample.comparison;
           return <div key={sample.id} className="p-5">
             <div className="grid lg:grid-cols-[1fr_220px_auto] gap-4 items-center">
-              <div><div className="flex flex-wrap items-center gap-2"><span className="font-mono-tight text-[10px] uppercase px-2 py-1 rounded bg-cyan/10 text-cyan">{sample.mode === "1to1" ? "1:1" : "1:N"}</span><span className="text-sm">Predicted <strong>{sample.predicted_label || "no profile"}</strong></span><span className="text-xs text-muted">{best.similarity}% model similarity · {best.certainty}% certainty</span></div><div className="text-xs text-muted mt-2">{sample.true_label ? `User identified as ${sample.true_label}` : "Identity feedback still missing"} · {new Date(sample.created_at).toLocaleString()}</div></div>
+              <div><div className="flex flex-wrap items-center gap-2"><span className="font-mono-tight text-[10px] uppercase px-2 py-1 rounded bg-cyan/10 text-cyan">{sample.mode === "1to1" ? "1:1" : "1:N"}</span><span className="text-sm">Predicted <strong>{sample.predicted_label || "no profile"}</strong></span><span className="text-xs text-muted">{best.similarity}% model similarity · {best.certainty}% certainty</span></div><div className="text-xs text-muted mt-2">{sample.true_label ? `User identified as ${sample.true_label}` : "Identity feedback still missing"} · {formatDateTime(sample.created_at)}</div></div>
               <select value={assignments[sample.id] ?? defaultProfile} onChange={(event) => void selectReviewProfile(sample.id, event.target.value)} className="bg-surface-2 border border-border rounded-lg px-3 py-2 text-sm"><option value="">compare with identity…</option>{data.profiles.filter((profile) => !profile.blacklisted).map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select>
               <div className="flex gap-2"><button disabled={reviewBusy === sample.id || !(assignments[sample.id] || defaultProfile)} onClick={() => void review(sample.id, "approve", defaultProfile)} className="bg-cyan/15 text-cyan px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">approve</button><button disabled={reviewBusy === sample.id} onClick={() => void review(sample.id, "reject")} className="bg-danger/15 text-danger px-3 py-2 rounded text-xs font-mono-tight disabled:opacity-40">reject</button></div>
             </div>
@@ -120,7 +141,21 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
         <div className="flex flex-wrap justify-between gap-4 mb-5"><div><h2 className="font-mono-tight text-xs uppercase tracking-widest">training benchmark</h2><p className="text-xl mt-2">{data.experiment.best_model.replaceAll("_", " ")} · {Math.round(data.experiment.best_metrics.accuracy * 100)}% held-window accuracy</p></div><div className="text-xs text-muted">SVM C={data.experiment.tuned_svm.C}, gamma={data.experiment.tuned_svm.gamma}<br/>Neural validation {Math.round(data.experiment.neural.best_validation_accuracy * 100)}%</div></div>
         <div className="grid lg:grid-cols-[1fr_1.2fr] gap-5 items-center"><div className="grid grid-cols-2 gap-3"><div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.experiment.best_metrics.verification_auc.toFixed(4)}</div><div className="text-xs text-muted">verification AUC</div></div><div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{(data.experiment.best_metrics.eer * 100).toFixed(2)}%</div><div className="text-xs text-muted">equal-error rate</div></div><p className="col-span-2 text-xs text-danger/90">{data.experiment.warning}</p></div><ResponsiveContainer width="100%" height={220}><BarChart data={ablationBars}><CartesianGrid stroke="var(--border)" vertical={false}/><XAxis dataKey="name" tick={{fill:"var(--muted)",fontSize:10}}/><YAxis domain={[0,100]} tick={{fill:"var(--muted)",fontSize:10}}/><Tooltip/><Bar dataKey="accuracy" fill="var(--cyan)" radius={[4,4,0,0]}/><Bar dataKey="auc" fill="var(--amber)" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></div>
       </section>}
-      <section className="bg-surface border border-border rounded-xl overflow-hidden"><div className="p-5 border-b border-border"><h2 className="font-mono-tight text-xs uppercase tracking-widest">profiles</h2></div><div className="divide-y divide-border">{data.profiles.map((profile) => <div key={profile.id} className="p-4 flex flex-wrap items-center gap-4"><div className="flex-1 min-w-40"><div className={profile.blacklisted ? "line-through text-muted" : ""}>{profile.label}</div><div className="text-xs text-muted mt-1">{profile.enrollment_count} enrollment{profile.enrollment_count === 1 ? "" : "s"} · {profile.last_enrollment ? new Date(profile.last_enrollment).toLocaleDateString() : "never"}</div></div><button onClick={() => blacklist(profile.id, !profile.blacklisted)} className={`px-3 py-2 rounded text-xs font-mono-tight ${profile.blacklisted ? "bg-cyan/15 text-cyan" : "bg-amber/15 text-amber"}`}>{profile.blacklisted ? "restore" : "blacklist"}</button><button onClick={() => remove(profile.id, profile.label)} className="px-3 py-2 rounded text-xs font-mono-tight bg-danger/15 text-danger">delete</button></div>)}</div></section>
+      <AdminJobsAndAlerts />
+      <JobsAndAlerts />
+      <section className="bg-surface border border-border rounded-xl overflow-hidden"><div className="p-5 border-b border-border"><h2 className="font-mono-tight text-xs uppercase tracking-widest">profiles</h2></div><div className="divide-y divide-border">{data.profiles.map((profile) => <div key={profile.id} className="p-4"><div className="flex flex-wrap items-center gap-4"><div className="flex-1 min-w-40"><div className={profile.blacklisted ? "line-through text-muted" : ""}>{profile.label}</div><div className="text-xs text-muted mt-1">{profile.enrollment_count} enrollment{profile.enrollment_count === 1 ? "" : "s"} · {profile.last_enrollment ? formatDate(profile.last_enrollment) : "never"} · {profile.user_id ? "linked to an account" : "unclaimed"}</div></div>
+        <button
+          disabled={Boolean(profile.user_id) || claimTokenBusy === profile.id}
+          onClick={() => void generateClaimToken(profile.id)}
+          title={profile.user_id ? "Already linked to an account — claim tokens are only for unclaimed profiles" : "Generate a one-time link for someone to claim this profile"}
+          className="px-3 py-2 rounded text-xs font-mono-tight bg-cyan/15 text-cyan disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {claimTokenBusy === profile.id ? "generating…" : "claim token"}
+        </button>
+        <button onClick={() => blacklist(profile.id, !profile.blacklisted)} className={`px-3 py-2 rounded text-xs font-mono-tight ${profile.blacklisted ? "bg-cyan/15 text-cyan" : "bg-amber/15 text-amber"}`}>{profile.blacklisted ? "restore" : "blacklist"}</button><button onClick={() => remove(profile.id, profile.label)} className="px-3 py-2 rounded text-xs font-mono-tight bg-danger/15 text-danger">delete</button></div>
+        {claimTokens[profile.id] && <div className="mt-3 bg-surface-2 border border-border rounded-lg p-3 flex flex-wrap items-center gap-3"><code className="text-xs font-mono-tight break-all flex-1">{claimTokens[profile.id]}</code><button onClick={() => navigator.clipboard.writeText(claimTokens[profile.id])} className="px-3 py-1.5 rounded text-xs font-mono-tight bg-cyan text-bg shrink-0">copy</button></div>}
+        {claimTokenError[profile.id] && <div className="mt-3 text-xs text-danger">{claimTokenError[profile.id]}</div>}
+      </div>)}</div></section>
       <div className="mt-6 text-xs text-muted">Model {data.model.version.slice(0,19)} · {data.model.svm_trained ? "SVM active" : "centroid mode"} · neural {data.model.neural_ready ? "ready" : "waiting for repeated sessions"}</div>
     </div></div>
   );

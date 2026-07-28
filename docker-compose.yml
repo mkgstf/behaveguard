@@ -1,0 +1,45 @@
+name: behaveguard
+
+# Local dev only runs the infra (Postgres/Redis) here — the API runs via
+# `uv run behaveguard serve`. Retrain jobs trigger on-demand: in
+# production via a Cloud Run Job execution (see jobs.trigger_retrain_job
+# and Dockerfile), locally via a background thread in the same process
+# (zero extra setup — see worker.py's docstring for why there's no
+# separate always-running worker process anymore).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: behaveguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: behaveguard
+      POSTGRES_PASSWORD: behaveguard
+      POSTGRES_DB: behaveguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - behaveguard-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U behaveguard -d behaveguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: behaveguard-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - behaveguard-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  behaveguard-postgres-data:
+  behaveguard-redis-data:

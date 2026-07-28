@@ -1,0 +1,140 @@
+# One-file CI/CD pipeline for BehaveGuard, triggered on push to `main`.
+#
+# Runs in order: build the image -> push it -> run migrations against
+# Cloud SQL (via a Cloud SQL Auth Proxy sidecar on the shared Cloud Build
+# network) -> deploy the API service -> update the retrain Cloud Run Job
+# to the same image.
+#
+# Trigger setup (Console -> Cloud Build -> Triggers -> your trigger):
+#   Configuration type: "Cloud Build configuration file (yaml or json)"
+#   Location: /cloudbuild.yaml
+#   Substitution variables (Console lets you set these per-trigger under
+#   "Advanced" -> "Substitution variables" - fill in your actual values):
+#     _REGION                  e.g. us-central1
+#     _CLOUDSQL_INSTANCE       <PROJECT_ID>:<REGION>:behaveguard-db
+#     _DB_NAME                 behaveguard
+#     _DB_USER                 behaveguard
+#     _API_SERVICE             behaveguard-api
+#     _RETRAIN_JOB             behaveguard-retrain
+#
+# The Cloud Build service account needs these IAM roles (grant once, in
+# IAM & Admin -> IAM, on the account shown in the trigger's "Service
+# account" field):
+#   - Artifact Registry Writer   (push the image)
+#   - Cloud SQL Client           (use the proxy for migrations)
+#   - Secret Manager Secret Accessor  (read DATABASE_URL for migrations)
+#   - Cloud Run Admin            (deploy the service, update the job)
+#   - Service Account User       (act as the Cloud Run runtime service account)
+
+steps:
+  # 1. Build the image.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
+      - -t
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:latest'
+      - -f
+      - Dockerfile
+      - .
+
+  # 2. Push both tags.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api'
+      - --all-tags
+    waitFor: [build]
+
+  # 3. Start a Cloud SQL Auth Proxy as its own detached container on the
+  #    shared `cloudbuild` Docker network, so it outlives this step and
+  #    stays reachable (by container name) for the migration step below.
+  #    Note: this must go through `docker run -d` from the docker builder
+  #    image, not a backgrounded process inside the proxy step's own
+  #    container — a background process inside a step's container dies the
+  #    moment that step's container exits, same as any other child process.
+  - id: start-cloudsql-proxy
+    name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        docker run -d --name cloudsql-proxy --network cloudbuild \
+          gcr.io/cloud-sql-connectors/cloud-sql-proxy:latest \
+          --address 0.0.0.0 --port 5432 "${_CLOUDSQL_INSTANCE}"
+        sleep 5
+    waitFor: [push]
+
+  # 4. Run migrations, using the exact image just built (it already has
+  #    alembic + the app's own venv baked in — no separate Python setup
+  #    needed here).
+  - id: migrate
+    name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        export DATABASE_URL="postgresql+psycopg://${_DB_USER}:$$DB_PASSWORD@cloudsql-proxy:5432/${_DB_NAME}"
+        alembic upgrade head
+    secretEnv: ['DB_PASSWORD']
+    waitFor: [start-cloudsql-proxy]
+
+  # 5. Deploy the API service — min-instances=0/max-instances=1 (see the
+  #    deployment plan doc for why max=1 matters here, not just cost).
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - '${_API_SERVICE}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+    waitFor: [migrate]
+
+  # 6. Update the retrain Cloud Run Job to the same image — it's only
+  #    invoked on-demand (see jobs.trigger_retrain_job), never running
+  #    between deploys.
+  - id: update-retrain-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - '${_RETRAIN_JOB}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
+      - '--region=${_REGION}'
+    waitFor: [migrate]
+
+  # 7. Smoke test — fail the build loudly if the deploy didn't actually
+  #    come up healthy, rather than finding out from a user report.
+  - id: smoke-test
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        URL=$(gcloud run services describe ${_API_SERVICE} --region=${_REGION} --format='value(status.url)')
+        curl -f "$$URL/api/v1/ping"
+        curl -f "$$URL/api/v1/health"
+    waitFor: [deploy-api]
+
+availableSecrets:
+  secretManager:
+    - versionName: 'projects/$PROJECT_ID/secrets/DB_PASSWORD/versions/latest'
+      env: 'DB_PASSWORD'
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s
