@@ -28,6 +28,37 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return cosine_similarity(a, b)
 
 
+def behavioral_drift(vector: np.ndarray, profile: dict[str, Any]) -> dict[str, Any]:
+    """Return privacy-safe drift diagnostics against a profile's robust baseline."""
+    if profile.get("count", 0) < 3 or "feature_center" not in profile:
+        return {
+            "status": "insufficient_baseline",
+            "level": "unknown",
+            "score": None,
+            "outlier_feature_rate": None,
+        }
+    center = np.asarray(profile["feature_center"], dtype=np.float64)
+    scale = np.maximum(
+        np.asarray(profile["feature_scale"], dtype=np.float64),
+        0.25,
+    )
+    standardized_distance = np.abs(np.asarray(vector) - center) / scale
+    score = float(np.median(standardized_distance))
+    outlier_rate = float(np.mean(standardized_distance > 3.5))
+    if score < 1.5 and outlier_rate < 0.10:
+        level = "stable"
+    elif score < 2.5 and outlier_rate < 0.25:
+        level = "watch"
+    else:
+        level = "high"
+    return {
+        "status": "available",
+        "level": level,
+        "score": round(score, 2),
+        "outlier_feature_rate": round(outlier_rate, 3),
+    }
+
+
 @lru_cache(maxsize=2)
 def _load_neural_artifact(modified_at: float):
     checkpoint = torch.load(NEURAL_PATH, map_location="cpu", weights_only=False)
@@ -86,6 +117,12 @@ def retrain_model() -> dict[str, Any]:
             "centroid": centroid / norm if norm else centroid,
             "count": len(member),
             "dispersion": float(np.mean([1 - _cosine(value, centroid) for value in member])),
+            "feature_center": np.median(member, axis=0),
+            "feature_scale": np.maximum(
+                (np.percentile(member, 75, axis=0) - np.percentile(member, 25, axis=0))
+                / 1.349,
+                0.25,
+            ),
         }
     svm = components["svm"]
     calibration = (
@@ -168,6 +205,7 @@ def score_session(session: dict[str, Any], candidate_ids: list[str]) -> dict[str
             "personal_neural_threshold": personal_neural["threshold"] if personal_neural else None,
             "personal_neural_match": personal_neural["match"] if personal_neural else None,
             "enrollment_count": profile["count"],
+            "behavioral_drift": behavioral_drift(vector, profile),
         })
     if not similarities:
         raise ValueError("None of the selected profiles has an enrollment")
@@ -207,6 +245,8 @@ def compare_detail(profile_id: str, probe_features: dict[str, float]) -> list[di
 def model_status() -> dict[str, Any]:
     artifact = load_model()
     counts = Counter(row["profile_id"] for row in all_training_rows())
+    verification_calibration = artifact.get("verification_calibration") or {}
+    global_metrics = verification_calibration.get("global_metrics") or {}
     neural_ready = False
     neural_status = "not trained"
     neural_profiles = 0
@@ -232,5 +272,19 @@ def model_status() -> dict[str, Any]:
         "neural_status": neural_status,
         "neural_profiles": neural_profiles,
         "neural_eligible_profiles": sum(count >= 2 for count in counts.values()),
+        "feature_count": len(artifact.get("feature_names", [])),
+        "dropped_feature_count": len(artifact.get("dropped_features", [])),
+        "calibration": {
+            "method": verification_calibration.get("method", "legacy_fixed_threshold"),
+            "global_threshold": artifact.get("verification_threshold", 62.0),
+            "target_far": verification_calibration.get("target_far"),
+            "observed_far": global_metrics.get("false_acceptance_rate"),
+            "observed_frr": global_metrics.get("false_rejection_rate"),
+            "balanced_accuracy": global_metrics.get("balanced_accuracy"),
+            "genuine_trials": global_metrics.get("genuine_trials", 0),
+            "impostor_trials": global_metrics.get("impostor_trials", 0),
+            "unknown_trials": global_metrics.get("unknown_trials", 0),
+            "calibrated_profiles": len(verification_calibration.get("profile_thresholds", {})),
+        },
         "strategy": "BiLSTM + TCN fusion when repeated sessions are available; robust centroid/SVM fallback otherwise",
     }
