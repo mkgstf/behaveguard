@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from .calibration import (
+    CAPTURE_LENGTH_FEATURES,
     calibrate_verification,
     cosine_similarity,
     fit_classical_components,
@@ -98,6 +99,27 @@ def retrain_model() -> dict[str, Any]:
     ensure_directories()
     rows = all_training_rows()
     names, dropped_features = select_feature_names(rows)
+    if rows and not names:
+        # A new roster can contain only repeated/identical sessions. Those
+        # features cannot train a discriminative SVM yet, but they still form
+        # a useful one-profile deviation baseline and keep verification
+        # available during cold start.
+        names = sorted(
+            {
+                name
+                for row in rows
+                for name in row["features"]
+                if name not in CAPTURE_LENGTH_FEATURES
+            }
+        )
+        dropped_features = sorted(
+            {
+                name
+                for row in rows
+                for name in row["features"]
+                if name in CAPTURE_LENGTH_FEATURES
+            }
+        )
     if not rows or not names:
         artifact = {"version": datetime.now(UTC).isoformat(), "feature_names": names, "profiles": {}, "scaler": None, "svm": None}
         joblib.dump(artifact, MODEL_PATH)

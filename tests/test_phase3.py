@@ -146,7 +146,7 @@ def test_promotion_gate_promotes_first_model_with_no_baseline():
     active = d.get_active_model_version("neural")
     assert active is not None
     checkpoint = torch.load(active["artifact_uri"], map_location="cpu", weights_only=False)
-    assert checkpoint["format_version"] == 2
+    assert checkpoint["format_version"] == 3
     assert len(checkpoint["scaler"]["center"]) == len(checkpoint["feature_names"])
     assert len(checkpoint["trained_session_ids"]) == 8
     assert checkpoint["temperature"] > 0

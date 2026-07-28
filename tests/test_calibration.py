@@ -3,6 +3,7 @@ from behaveguard.calibration import (
     choose_operating_threshold,
     select_feature_names,
 )
+from behaveguard.modeling import retrain_model
 
 
 def _row(profile_id: str, index: int, signal: float) -> dict:
@@ -38,6 +39,25 @@ def test_feature_selection_removes_constants_and_capture_length_proxies():
 
     assert "signal" in selected
     assert {"constant", "key_count", "passive_count"} <= set(dropped)
+
+
+def test_model_cold_start_keeps_non_capture_features(monkeypatch, tmp_path):
+    rows = [
+        {
+            "id": f"same-{index}",
+            "profile_id": "only-profile",
+            "features": {"constant": 12.0, "key_count": 100.0},
+        }
+        for index in range(3)
+    ]
+    monkeypatch.setattr("behaveguard.modeling.all_training_rows", lambda: rows)
+    monkeypatch.setattr("behaveguard.modeling.MODEL_PATH", tmp_path / "model.joblib")
+
+    retrain_model()
+    artifact = __import__("joblib").load(tmp_path / "model.joblib")
+
+    assert artifact["feature_names"] == ["constant"]
+    assert artifact["dropped_features"] == ["key_count"]
 
 
 def test_calibration_uses_session_and_identity_disjoint_trials():
