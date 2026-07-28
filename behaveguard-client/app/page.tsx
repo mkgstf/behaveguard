@@ -56,6 +56,7 @@ export default function Home() {
   const [result, setResult] = useState<EnrollmentResult | VerificationResult | null>(null);
   const [enrollmentStats, setEnrollmentStats] = useState<SessionBehaviorMetrics | null>(null);
   const [submitError, setSubmitError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [retrainState, setRetrainState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const passivePointsRef = usePassiveMouseCollector();
   const sessionStart = useRef(0);
@@ -220,6 +221,8 @@ export default function Home() {
     setLastSessionData(data);
     verifiedProfileId.current = mode === "verify" ? selected[0].id : null;
     setRetrainState("idle");
+    setSubmitError("");
+    setSubmitting(true);
     try {
       const response = mode === "enroll" ? await api.enroll(selected[0].id, data) : mode === "verify" ? await api.verify(selected[0].id, data) : await api.identify(selected.map((profile) => profile.id), data);
       if ("profile" in response) setMyProfile(response.profile);
@@ -231,7 +234,7 @@ export default function Home() {
         setEnrollmentStats(null);
         api.myStats().then((stats) => { setEnrollmentStats(stats.latest); setMyStats(stats); }).catch(() => {});
       }
-    } catch (error) { setSubmitError(error instanceof Error ? error.message : "Submission failed"); }
+    } catch (error) { setSubmitError(error instanceof Error ? error.message : "Submission failed"); } finally { setSubmitting(false); }
   }
 
   async function retrainFromLastVerification() {
@@ -331,9 +334,27 @@ export default function Home() {
     {screen === "keyboard" && <KeyboardTest segmentSeconds={quickVerification ? 20 : 90} onComplete={(events, pangramLen, freeLen) => { keyboardData.current = { events, pangramLen, freeLen }; setScreen("mouse-dot"); }} />}
     {screen === "mouse-dot" && <MouseDotTask targetCount={quickVerification ? 8 : 25} onComplete={(trials) => { dotTrials.current = trials; setScreen("mouse-track"); }} />}
     {screen === "mouse-track" && <MouseTrackTask trialDurationMs={quickVerification ? 6000 : 20000} onComplete={(trials) => { trackTrials.current = trials; setScreen("mouse-drag"); }} />}
-    {screen === "mouse-drag" && <MouseDragTask dragCount={quickVerification ? 4 : 10} onComplete={(trials) => { dragTrials.current = trials; void submit(buildSession()); }} />}
+    {screen === "mouse-drag" && !submitting && <MouseDragTask dragCount={quickVerification ? 4 : 10} onComplete={(trials) => { dragTrials.current = trials; void submit(buildSession()); }} />}
+    {screen === "mouse-drag" && submitting && <SubmittingScreen mode={mode} />}
     {submitError && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-danger text-white rounded-lg px-5 py-3 text-sm shadow-xl">{submitError} <button onClick={() => void submit(buildSession())} className="underline ml-3">retry</button></div>}
   </div>;
+}
+
+function SubmittingScreen({ mode }: { mode: AuthMode }) {
+  const label = mode === "enroll" ? "Saving your enrollment" : mode === "verify" ? "Checking your session" : "Comparing candidates";
+  return (
+    <div className="flex-1 flex items-center justify-center px-6">
+      <div className="text-center fade-up">
+        <div className="relative w-14 h-14 mx-auto mb-6 flex items-center justify-center">
+          <span className="absolute inset-0 rounded-full border border-cyan/30 pulse-ring" />
+          <span className="absolute inset-0 rounded-full border border-amber/20 pulse-ring" style={{ animationDelay: "0.4s" }} />
+          <span className="font-mono-tight text-xl text-cyan caret">|</span>
+        </div>
+        <div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-muted mb-2">{label}</div>
+        <p className="text-sm text-muted">This usually takes just a moment…</p>
+      </div>
+    </div>
+  );
 }
 
 function AccessDenied({ onBack }: { onBack: () => void }) {

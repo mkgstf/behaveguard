@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -72,10 +73,23 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('user','org_admin','platform_admin')", name="ck_users_role"),
         CheckConstraint("status IN ('active','suspended','deleted')", name="ck_users_status"),
-        # Case-insensitive email uniqueness + the (provider, subject) uniqueness
-        # for linked OAuth identities are created as indexes in the Alembic
-        # migration, same pattern as `profiles.label` in Phase 0.
     )
+
+
+# Case-insensitive email uniqueness (equivalent to SQLite's `UNIQUE ...
+# COLLATE NOCASE`). Declared here — after the class, referencing the
+# compiled Table's column (`User.__table__.c.email`) — rather than inside
+# `__table_args__` referencing the bare `email` attribute: the latter looks
+# like it should work and raises no error, but silently produces an empty,
+# no-op index, since `email` at that point is the `Mapped`/`MappedColumn`
+# descriptor, not yet the real `Column` `func.lower()` needs. This was
+# actually verified against the real gap it exists to close: this same
+# constraint already existed in the Alembic migration (raw SQL, matching
+# name `ux_users_email_lower`) but was never mirrored here, so any schema
+# provisioned via `Base.metadata.create_all()` (the dev/test fallback in
+# `database.init_db()`) silently lacked it — letting duplicate emails
+# differing only in case slip through in exactly that context.
+Index("ux_users_email_lower", func.lower(User.__table__.c.email), unique=True)
 
 
 class RefreshToken(Base):
@@ -139,13 +153,17 @@ class Profile(Base):
         back_populates="profile", cascade="all, delete-orphan", passive_deletes=True
     )
 
-    # Case-insensitive uniqueness on `label` (equivalent to SQLite's
-    # `UNIQUE ... COLLATE NOCASE`) is created as a functional index
-    # (`lower(label)`) directly in the Alembic migration rather than here,
-    # since a same-class declarative `Index` can't cleanly reference
-    # `func.lower(label)` before the class exists.
     # `user_id UNIQUE` enforces the Phase 1 "one profile per user" rule at
-    # the database level, not just in application code.
+    # the database level, not just in application code. Case-insensitive
+    # uniqueness on `label` is declared just below, after the class — see
+    # the comment there for why it can't live inside `__table_args__`.
+
+
+# Same reasoning and same fix as User.email above: referencing the bare
+# `label` attribute inside `__table_args__` would silently produce a no-op
+# index rather than an error, so this lives here instead, after the class,
+# referencing the compiled Table's column directly.
+Index("ux_profiles_label_lower", func.lower(Profile.__table__.c.label), unique=True)
 
 
 class MergeEvent(Base):
