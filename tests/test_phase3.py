@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import torch
 from fastapi.testclient import TestClient
 
 from behaveguard import database as d
@@ -149,4 +150,9 @@ def test_promotion_gate_promotes_first_model_with_no_baseline():
     result = train_neural_and_promote(epochs=10)
     assert result["promoted"] is True
     assert result["baseline_accuracy"] is None
-    assert d.get_active_model_version("neural") is not None
+    active = d.get_active_model_version("neural")
+    assert active is not None
+    checkpoint = torch.load(active["artifact_uri"], map_location="cpu", weights_only=False)
+    assert checkpoint["format_version"] == 2
+    assert len(checkpoint["scaler"]["center"]) == len(checkpoint["feature_names"])
+    assert len(checkpoint["trained_session_ids"]) == 8

@@ -52,7 +52,7 @@ def _neural_probabilities(session: dict[str, Any], features: dict[str, float]) -
             )
             probabilities = torch.softmax(logits[0], dim=0).cpu().numpy()
         return {str(profile_id): float(value) for profile_id, value in zip(checkpoint["classes"], probabilities)}
-    except (KeyError, RuntimeError, ValueError):
+    except (KeyError, RuntimeError, ValueError, OSError):
         return {}
 
 
@@ -161,11 +161,30 @@ def compare_detail(profile_id: str, probe_features: dict[str, float]) -> list[di
 def model_status() -> dict[str, Any]:
     artifact = load_model()
     counts = Counter(row["profile_id"] for row in all_training_rows())
-    neural_ready = NEURAL_PATH.exists()
+    neural_ready = False
+    neural_status = "not trained"
+    neural_profiles = 0
+    if NEURAL_PATH.exists():
+        try:
+            checkpoint = torch.load(NEURAL_PATH, map_location="cpu", weights_only=False)
+            neural_profiles = len(checkpoint.get("classes", []))
+            if checkpoint.get("scaler") and checkpoint.get("feature_names"):
+                neural_ready = True
+                neural_status = (
+                    "experimental window-trained artifact"
+                    if checkpoint.get("experimental")
+                    else "independent-session artifact"
+                )
+            else:
+                neural_status = "incompatible legacy artifact (missing scaler)"
+        except (KeyError, RuntimeError, ValueError, OSError):
+            neural_status = "unreadable artifact"
     return {
         "version": artifact["version"], "session_count": artifact.get("session_count", 0),
         "profile_count": artifact.get("profile_count", 0), "svm_trained": artifact.get("svm") is not None,
         "neural_ready": neural_ready,
-        "neural_status": "experimental window-trained artifact" if neural_ready and min(counts.values(), default=0) < 2 else "independent-session artifact" if neural_ready else "not trained",
+        "neural_status": neural_status,
+        "neural_profiles": neural_profiles,
+        "neural_eligible_profiles": sum(count >= 2 for count in counts.values()),
         "strategy": "BiLSTM + TCN fusion when repeated sessions are available; robust centroid/SVM fallback otherwise",
     }

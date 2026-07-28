@@ -2,6 +2,7 @@ import torch
 
 from behaveguard.neural import BehavioralSequenceNet
 from behaveguard.personal_verifier import personal_folds
+from behaveguard.training import _eligible_rows, _fit_scaler, _split_holdout
 
 
 def test_neural_model_shapes():
@@ -25,3 +26,39 @@ def test_personal_folds_never_mix_held_parent_sessions():
         assert all(row["id"] not in train_ids for row in fold["test_impostors"])
         held_impostors.extend(row["id"] for row in fold["test_impostors"])
     assert sorted(held_impostors) == [f"i{index}" for index in range(8)]
+
+
+def _training_row(profile_id: str, session_id: str, collected_at: str, value: float) -> dict:
+    return {
+        "id": session_id,
+        "profile_id": profile_id,
+        "collected_at": collected_at,
+        "features": {"signal": value},
+        "payload": {"keyboard": {"events": []}, "mouse": {}},
+    }
+
+
+def test_neural_training_excludes_single_session_profiles():
+    rows = [
+        _training_row("repeated", "r1", "2026-01-01", 1),
+        _training_row("repeated", "r2", "2026-01-02", 2),
+        _training_row("single", "s1", "2026-01-03", 3),
+    ]
+
+    assert {row["profile_id"] for row in _eligible_rows(rows)} == {"repeated"}
+
+
+def test_holdout_is_latest_complete_session_and_scaler_is_train_only():
+    rows = [
+        _training_row("a", "a1", "2026-01-01", 0),
+        _training_row("a", "a2", "2026-01-02", 2),
+        _training_row("a", "a3", "2026-01-03", 1000),
+        _training_row("b", "b1", "2026-01-01", 10),
+        _training_row("b", "b2", "2026-01-02", 12),
+        _training_row("b", "b3", "2026-01-03", 2000),
+    ]
+
+    train, holdout = _split_holdout(rows)
+    assert {row["id"] for row in holdout} == {"a3", "b3"}
+    scaler = _fit_scaler(train, ["signal"])
+    assert float(scaler.center_[0]) < 100
