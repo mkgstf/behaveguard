@@ -125,14 +125,7 @@ def test_promotion_gate_keeps_active_model_when_candidate_is_worse():
     assert first["promoted"] is True
     active_before = d.get_active_model_version("neural")
 
-    call_count = {"n": 0}
-    from behaveguard.training import _evaluate_accuracy as real_evaluate
-
-    def fake_evaluate(model, tensors, targets):
-        call_count["n"] += 1
-        return 0.0 if call_count["n"] == 1 else real_evaluate(model, tensors, targets)
-
-    with patch("behaveguard.training._evaluate_accuracy", side_effect=fake_evaluate):
+    with patch("behaveguard.training._should_promote", return_value=False):
         second = train_neural_and_promote(epochs=10, seed=99)
 
     assert second["promoted"] is False
@@ -156,3 +149,4 @@ def test_promotion_gate_promotes_first_model_with_no_baseline():
     assert checkpoint["format_version"] == 2
     assert len(checkpoint["scaler"]["center"]) == len(checkpoint["feature_names"])
     assert len(checkpoint["trained_session_ids"]) == 8
+    assert checkpoint["temperature"] > 0

@@ -54,7 +54,8 @@ def _neural_probabilities(session: dict[str, Any], features: dict[str, float]) -
                 torch.tensor(mouse[None, ...], dtype=torch.float32),
                 torch.tensor(scaled[None, ...], dtype=torch.float32),
             )
-            probabilities = torch.softmax(logits[0], dim=0).cpu().numpy()
+            temperature = max(float(checkpoint.get("temperature", 1.0)), 1e-3)
+            probabilities = torch.softmax(logits[0] / temperature, dim=0).cpu().numpy()
         return {str(profile_id): float(value) for profile_id, value in zip(checkpoint["classes"], probabilities)}
     except (KeyError, RuntimeError, ValueError, OSError):
         return {}

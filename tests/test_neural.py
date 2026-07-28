@@ -2,7 +2,12 @@ import torch
 
 from behaveguard.neural import BehavioralSequenceNet
 from behaveguard.personal_verifier import personal_folds
-from behaveguard.training import _eligible_rows, _fit_scaler, _split_holdout
+from behaveguard.training import (
+    _eligible_rows,
+    _fit_scaler,
+    _should_promote,
+    _split_holdout,
+)
 
 
 def test_neural_model_shapes():
@@ -62,3 +67,20 @@ def test_holdout_is_latest_complete_session_and_scaler_is_train_only():
     assert {row["id"] for row in holdout} == {"a3", "b3"}
     scaler = _fit_scaler(train, ["signal"])
     assert float(scaler.center_[0]) < 100
+
+
+def test_neural_promotion_prioritizes_balanced_accuracy_then_calibration():
+    baseline = {
+        "balanced_accuracy": 0.8,
+        "macro_f1": 0.8,
+        "nll": 0.7,
+    }
+
+    assert _should_promote(
+        {"balanced_accuracy": 0.8, "macro_f1": 0.8, "nll": 0.6},
+        baseline,
+    )
+    assert not _should_promote(
+        {"balanced_accuracy": 0.75, "macro_f1": 0.9, "nll": 0.2},
+        baseline,
+    )
