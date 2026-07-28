@@ -73,10 +73,12 @@ steps:
   #    needed here).
   - id: migrate
     name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/behaveguard/api:$SHORT_SHA'
-    entrypoint: alembic
-    args: ['upgrade', 'head']
-    env:
-      - 'DATABASE_URL=postgresql+psycopg://${_DB_USER}:$$DB_PASSWORD@cloudsql-proxy:5432/${_DB_NAME}'
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        export DATABASE_URL="postgresql+psycopg://${_DB_USER}:$$DB_PASSWORD@cloudsql-proxy:5432/${_DB_NAME}"
+        alembic upgrade head
     secretEnv: ['DB_PASSWORD']
     waitFor: [start-cloudsql-proxy]
 
