@@ -9,9 +9,14 @@ from typing import Any
 import joblib
 import numpy as np
 import torch
-from sklearn.preprocessing import RobustScaler
-from sklearn.svm import SVC
 
+from .calibration import (
+    calibrate_verification,
+    cosine_similarity,
+    fit_classical_components,
+    score_classical_components,
+    select_feature_names,
+)
 from .config import ARTIFACT_DIR, MODEL_PATH, NEURAL_PATH, ensure_directories
 from .database import all_training_rows, profile_sessions
 from .features import detailed_comparison, extract_features, feature_vector
@@ -20,8 +25,7 @@ from .personal_verifier import score_personal_verifier
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
-    denominator = np.linalg.norm(a) * np.linalg.norm(b)
-    return float(np.dot(a, b) / denominator) if denominator else 0.0
+    return cosine_similarity(a, b)
 
 
 @lru_cache(maxsize=2)
@@ -59,15 +63,19 @@ def _neural_probabilities(session: dict[str, Any], features: dict[str, float]) -
 def retrain_model() -> dict[str, Any]:
     ensure_directories()
     rows = all_training_rows()
-    names = sorted({name for row in rows for name in row["features"]})
+    names, dropped_features = select_feature_names(rows)
     if not rows or not names:
         artifact = {"version": datetime.now(UTC).isoformat(), "feature_names": names, "profiles": {}, "scaler": None, "svm": None}
         joblib.dump(artifact, MODEL_PATH)
         return {"session_count": 0, "profile_count": 0, "svm_trained": False}
-    raw = np.vstack([feature_vector(row["features"], names) for row in rows])
-    scaler = RobustScaler(quantile_range=(10, 90)).fit(raw)
-    matrix = scaler.transform(raw)
-    labels = np.asarray([row["profile_id"] for row in rows])
+    config_path = ARTIFACT_DIR / "tuned_config.json"
+    parameters = json.loads(config_path.read_text()).get("svm", {}) if config_path.exists() else {}
+    c_value = float(parameters.get("C", 2.0))
+    gamma = parameters.get("gamma", "scale")
+    components = fit_classical_components(rows, names, c_value=c_value, gamma=gamma)
+    scaler = components["scaler"]
+    matrix = components["matrix"]
+    labels = components["labels"]
     profiles = {}
     for profile_id in sorted(set(labels)):
         member = matrix[labels == profile_id]
@@ -78,15 +86,24 @@ def retrain_model() -> dict[str, Any]:
             "count": len(member),
             "dispersion": float(np.mean([1 - _cosine(value, centroid) for value in member])),
         }
-    svm = None
-    if len(profiles) >= 2:
-        config_path = ARTIFACT_DIR / "tuned_config.json"
-        parameters = json.loads(config_path.read_text()).get("svm", {}) if config_path.exists() else {}
-        svm = SVC(kernel="rbf", C=float(parameters.get("C", 2.0)), gamma=parameters.get("gamma", "scale"), class_weight="balanced").fit(matrix, labels)
+    svm = components["svm"]
+    calibration = (
+        calibrate_verification(
+            rows, names, c_value=c_value, gamma=gamma,
+            target_far=float(parameters.get("target_far", 0.05)),
+        )
+        if len(profiles) >= 2
+        else None
+    )
+    verification_threshold = (
+        calibration["global_threshold"] if calibration else 62.0
+    )
     artifact = {
         "version": datetime.now(UTC).isoformat(), "feature_names": names, "profiles": profiles,
         "scaler": scaler, "svm": svm, "session_count": len(rows), "profile_count": len(profiles),
-        "verification_threshold": float(parameters.get("verification_threshold", 62.0)) if len(profiles) >= 2 else 62.0,
+        "verification_threshold": verification_threshold,
+        "verification_calibration": calibration,
+        "dropped_features": dropped_features,
     }
     joblib.dump(artifact, MODEL_PATH)
     return {"version": artifact["version"], "session_count": len(rows), "profile_count": len(profiles), "svm_trained": svm is not None}
@@ -105,13 +122,25 @@ def score_session(session: dict[str, Any], candidate_ids: list[str]) -> dict[str
     if not names:
         raise ValueError("No enrolled model is available")
     vector = artifact["scaler"].transform(feature_vector(features, names).reshape(1, -1))[0]
+    classical_scores = score_classical_components(
+        features,
+        names,
+        {
+            "scaler": artifact["scaler"],
+            "svm": artifact.get("svm"),
+            "centroids": {
+                profile_id: profile["centroid"]
+                for profile_id, profile in artifact["profiles"].items()
+            },
+        },
+    )
     svm_probabilities: dict[str, float] = {}
     svm = artifact.get("svm")
     if svm is not None:
         decision = np.asarray(svm.decision_function(vector.reshape(1, -1))).reshape(-1)
         if len(svm.classes_) == 2 and decision.size == 1:
             decision = np.asarray([-decision[0], decision[0]])
-        decision = np.exp(decision - decision.max())
+        decision = np.exp(np.clip(decision - decision.max(), -50, 0))
         decision /= decision.sum()
         svm_probabilities = {str(label): float(value) for label, value in zip(svm.classes_, decision)}
     neural_probabilities = _neural_probabilities(session, features)
@@ -124,9 +153,15 @@ def score_session(session: dict[str, Any], candidate_ids: list[str]) -> dict[str
         svm_probability = svm_probabilities.get(profile_id, cosine)
         neural_probability = neural_probabilities.get(profile_id)
         personal_neural = score_personal_verifier(session, profile_id)
-        blended = cosine * 0.8 + svm_probability * 0.2 if neural_probability is None else cosine * 0.7 + svm_probability * 0.2 + neural_probability * 0.1
+        classical_score = classical_scores[profile_id]
+        rank_score = (
+            classical_score
+            if neural_probability is None
+            else classical_score * 0.9 + neural_probability * 0.1
+        )
         similarities.append({
-            "profile_id": profile_id, "score": blended, "svm_certainty": round(svm_probability * 100, 1),
+            "profile_id": profile_id, "score": classical_score, "rank_score": rank_score,
+            "svm_certainty": round(svm_probability * 100, 1),
             "neural_certainty": round(neural_probability * 100, 1) if neural_probability is not None else None,
             "personal_neural_certainty": personal_neural["certainty"] if personal_neural else None,
             "personal_neural_threshold": personal_neural["threshold"] if personal_neural else None,
@@ -135,20 +170,30 @@ def score_session(session: dict[str, Any], candidate_ids: list[str]) -> dict[str
         })
     if not similarities:
         raise ValueError("None of the selected profiles has an enrollment")
-    similarities.sort(key=lambda row: row["score"], reverse=True)
-    raw = np.asarray([row["score"] for row in similarities])
+    similarities.sort(key=lambda row: row["rank_score"], reverse=True)
+    raw = np.asarray([row["rank_score"] for row in similarities])
     probabilities = np.exp((raw - raw.max()) * 7)
     probabilities /= probabilities.sum()
     for row, probability in zip(similarities, probabilities):
         row["certainty"] = round(float(probability * 100), 1)
         row["similarity"] = round(float(row.pop("score") * 100), 1)
+        row.pop("rank_score")
     best = similarities[0]
     margin = best["similarity"] - similarities[1]["similarity"] if len(similarities) > 1 else 0.0
-    threshold = float(artifact.get("verification_threshold", 62.0))
+    calibration = artifact.get("verification_calibration") or {}
+    threshold = float(
+        (calibration.get("profile_thresholds") or {}).get(
+            best["profile_id"], artifact.get("verification_threshold", 62.0)
+        )
+    )
     accepted = best["similarity"] >= threshold and (len(similarities) == 1 or margin >= 3.0)
     return {
         "model_version": artifact["version"], "match": accepted, "best": best,
         "candidates": similarities, "threshold": threshold, "margin": round(margin, 1),
+        "calibration": {
+            "method": calibration.get("method", "legacy_fixed_threshold"),
+            "target_far": calibration.get("target_far"),
+        },
         "features": features,
     }
 
