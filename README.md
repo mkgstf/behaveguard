@@ -166,10 +166,20 @@ The supplied workbook has one session per person, so its accuracy is suitable on
 
 The experiment command creates `artifacts/experiment_report.json`, tunes classical models and the RBF-SVM, runs keyboard/mouse ablations and profile comparisons, and saves an explicitly experimental BiLSTM + TCN artifact.
 
+## Kaggle showcase
+
+The repository includes a complete Kaggle publication package under `kaggle/`:
+
+- `kaggle/behaveguard-dataset/` contains anonymized relational CSVs, session/window feature matrices, a data card, upload metadata, a custom responsible-use notice, and a checksum/schema manifest.
+- `kaggle/behaveguard_showcase.ipynb` is an executed, self-contained notebook covering integrity checks, EDA, WPM and motor-control statistics, nested RBF-SVM tuning, five classical models, modality ablation, verification ROC/EER, feature importance, candidate similarity, open-set stress testing, certainty calibration, and BiLSTM + TCN fusion training.
+- `kaggle/README.md` documents dataset and notebook publication using the current Kaggle CLI.
+
+Rebuild the public package with `uv run python scripts/export_kaggle_dataset.py` and regenerate the clean notebook with `uv run python scripts/build_kaggle_notebook.py`. The latter intentionally clears outputs; execute it again on Kaggle or through Jupyter before publishing a refreshed version.
+
 The `personal-neural` command trains a target-specific binary verifier when one identity has at least three independent sessions and at least four distinct impostor identities are available. Its outer evaluation holds out one complete genuine parent session and a disjoint subset of impostor identities per fold. Artifacts are stored per profile, so training another identity preserves existing personal verifiers. The saved personal vote is advisory and does not override the primary SVM/centroid decision.
 
 ## Data and privacy
 
-Raw workbooks, SQLite databases, and trained artifacts are intentionally excluded from this public repository because behavioral telemetry is biometric data. To run the project, place a consented workbook at `Behaveguard-client.xlsx`, or enroll fresh profiles through the application. Generated data and models remain under the ignored `data/` and `artifacts/` directories.
+Raw workbooks, SQLite databases, reversible identity maps, and trained artifacts are intentionally excluded from this public repository because behavioral telemetry is biometric data. To run the project, place a consented workbook at `Behaveguard-client.xlsx`, or enroll fresh profiles through the application. Generated application data and models remain under the ignored `data/` and `artifacts/` directories. The tracked Kaggle package is a deliberately reduced research export: names, exact timestamps, literal keys, absolute screen coordinates, and the private pseudonymization configuration are removed, but the remaining behavioral traces are still sensitive and require consent before public release.
 
 The admin ML-health panel exposes the selected/dropped feature counts, neural eligibility, calibration trial counts, threshold, and observed development FAR/FRR. These are calibrated development estimates, not a security guarantee: validate on more people, independent days, and representative devices before production use.
