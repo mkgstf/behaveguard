@@ -1,0 +1,16 @@
+{
+  "title": "BehaveGuard Multimodal Behavioral Authentication",
+  "id": "behaveguard-multimodal-behavioral-authentication",
+  "licenses": [
+    {
+      "name": "other"
+    }
+  ],
+  "keywords": [
+    "biometrics",
+    "cybersecurity",
+    "keystroke-dynamics",
+    "mouse-dynamics",
+    "deep-learning"
+  ]
+}

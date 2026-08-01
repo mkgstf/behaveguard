@@ -16,3 +16,4 @@ artifacts/
 # Cleaned Kaggle CSV exports are derived biometric data; keep local and
 # upload to Kaggle directly. Produce with scripts/export_kaggle_dataset.py.
 kaggle_dataset/
+.kaggle_export.local.json

@@ -1,0 +1,11 @@
+session_id,subject_id,duration_ms,n_keystrokes,backspace_count,n_mouse_events,n_dot_targets,n_drags,n_track_trials,has_keyboard,has_mouse
+session_003,candidate_09,311781,1058,47,3000,25,10,2,True,True
+session_009,candidate_01,328723,870,75,3000,25,10,2,True,True
+session_002,candidate_08,409413,683,17,3000,25,10,2,True,True
+session_001,candidate_03,322636,0,0,3000,25,10,2,False,True
+session_010,candidate_06,320719,383,30,3000,25,10,2,True,True
+session_004,candidate_05,4.65433e+06,900,76,3000,25,10,2,True,True
+session_006,candidate_09,300862,1072,26,3000,25,10,2,True,True
+session_005,candidate_04,339660,625,22,3000,25,10,2,True,True
+session_007,candidate_02,408589,483,20,3000,25,10,2,True,True
+session_008,candidate_07,334905,411,34,3000,25,10,2,True,True
