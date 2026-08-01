@@ -89,6 +89,22 @@ export default function AdminDashboard({ onBack }: { onBack: () => void }) {
       <button onClick={onBack} className="text-xs text-muted font-mono-tight mb-6 hover:text-text">← home</button>
       <div className="flex flex-wrap justify-between gap-4 items-end mb-8"><div><div className="font-mono-tight text-xs uppercase tracking-[0.3em] text-danger mb-2">admin</div><h1 className="text-3xl font-semibold">Behavior intelligence</h1></div><div className="text-xs text-muted max-w-md">{data.model.strategy}</div></div>
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">{Object.entries(data.summary).map(([label, value]) => <div key={label} className="bg-surface border border-border rounded-xl p-4"><div className="text-2xl font-mono-tight">{value}</div><div className="text-xs text-muted mt-1">{label.replaceAll("_", " ")}</div></div>)}</div>
+      <section className="bg-surface border border-border rounded-xl p-5 mb-8">
+        <div className="flex flex-wrap justify-between gap-4 mb-5">
+          <div><div className="font-mono-tight text-xs uppercase tracking-widest text-cyan">ML operating health</div><h2 className="text-xl font-semibold mt-2">Calibrated verification diagnostics</h2><p className="text-xs text-muted mt-1">Development estimates from held-out sessions and identity-disjoint unknown probes; more independent enrollments make these estimates more reliable.</p></div>
+          <div className="text-right"><div className="font-mono-tight text-3xl text-cyan">{data.model.calibration.global_threshold.toFixed(1)}%</div><div className="text-xs text-muted">global acceptance threshold</div></div>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.calibration.observed_far == null ? "n/a" : `${(data.model.calibration.observed_far * 100).toFixed(1)}%`}</div><div className="text-xs text-muted">observed false acceptance</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.calibration.observed_frr == null ? "n/a" : `${(data.model.calibration.observed_frr * 100).toFixed(1)}%`}</div><div className="text-xs text-muted">observed false rejection</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.calibration.calibrated_profiles}/{data.model.profile_count}</div><div className="text-xs text-muted">profile-specific thresholds</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.feature_count} / {data.model.dropped_feature_count}</div><div className="text-xs text-muted">selected / dropped features</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.calibration.genuine_trials}</div><div className="text-xs text-muted">held genuine trials</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.calibration.impostor_trials + data.model.calibration.unknown_trials}</div><div className="text-xs text-muted">impostor + unknown trials</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className="font-mono-tight text-xl">{data.model.neural_profiles}/{data.model.neural_eligible_profiles}</div><div className="text-xs text-muted">neural trained / eligible profiles</div></div>
+          <div className="bg-surface-2 rounded-lg p-4"><div className={`font-mono-tight text-sm ${data.model.neural_ready ? "text-cyan" : "text-amber"}`}>{data.model.neural_ready ? "ready" : "fallback active"}</div><div className="text-xs text-muted mt-1">{data.model.neural_status}</div></div>
+        </div>
+      </section>
       <section className="bg-surface border border-border rounded-xl overflow-hidden mb-8">
         <div className="p-5 border-b border-border flex flex-wrap items-center justify-between gap-4">
           <div><div className="font-mono-tight text-xs uppercase tracking-widest text-amber">identification review queue</div><h2 className="text-xl font-semibold mt-2">{data.review_counts.available} captured sample{data.review_counts.available === 1 ? "" : "s"} available</h2><p className="text-xs text-muted mt-1">Assign the real person, approve the sample, then retrain when the queue is ready.</p></div>

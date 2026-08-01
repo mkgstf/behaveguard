@@ -205,6 +205,16 @@ function TechnicalDetails({ result, showCertainty }: { result: VerificationResul
   if (result.best.personal_neural_certainty != null) rows.push({ label: "personal neural", value: `${result.best.personal_neural_certainty}%` });
   rows.push({ label: "decision threshold", value: `${result.threshold}%` });
   rows.push({ label: "top-candidate margin", value: `${result.margin}%` });
+  const drift = result.best.behavioral_drift;
+  if (drift?.status === "available") {
+    rows.push({ label: "behavioral drift", value: drift.level });
+    rows.push({
+      label: "outlier feature rate",
+      value: `${Math.round((drift.outlier_feature_rate ?? 0) * 100)}%`,
+    });
+  } else if (drift) {
+    rows.push({ label: "behavioral drift", value: "needs 3 enrollments" });
+  }
 
   return (
     <div className="border border-border rounded-xl overflow-hidden">

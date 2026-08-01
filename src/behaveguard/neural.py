@@ -6,6 +6,15 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+
+NEURAL_FORMAT_VERSION = 3
+
+
+def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    weights = mask.unsqueeze(-1).to(values.dtype)
+    return (values * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1)
 
 
 class TemporalBlock(nn.Module):
@@ -16,8 +25,9 @@ class TemporalBlock(nn.Module):
             nn.Conv1d(hidden, hidden, 3, padding=1), nn.BatchNorm1d(hidden), nn.GELU(),
         )
 
-    def forward(self, values: torch.Tensor) -> torch.Tensor:
-        return self.net(values.transpose(1, 2)).mean(dim=-1)
+    def forward(self, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        encoded = self.net(values.transpose(1, 2)).transpose(1, 2)
+        return _masked_mean(encoded, mask)
 
 
 class BehavioralSequenceNet(nn.Module):
@@ -32,9 +42,23 @@ class BehavioralSequenceNet(nn.Module):
         self.classifier = nn.Linear(embedding_dim, class_count)
 
     def forward(self, keyboard: torch.Tensor, mouse: torch.Tensor, features: torch.Tensor):
-        keyboard_out, _ = self.keyboard(keyboard)
-        keyboard_embedding = keyboard_out.mean(dim=1)
-        mouse_embedding = self.mouse(mouse)
+        keyboard_mask = keyboard[..., -1] > 0
+        mouse_mask = mouse[..., -1] > 0
+        keyboard_lengths = keyboard_mask.sum(dim=1).clamp_min(1).cpu()
+        packed = pack_padded_sequence(
+            keyboard,
+            keyboard_lengths,
+            batch_first=True,
+            enforce_sorted=False,
+        )
+        packed_out, _ = self.keyboard(packed)
+        keyboard_out, _ = pad_packed_sequence(
+            packed_out,
+            batch_first=True,
+            total_length=keyboard.shape[1],
+        )
+        keyboard_embedding = _masked_mean(keyboard_out, keyboard_mask)
+        mouse_embedding = self.mouse(mouse, mouse_mask)
         feature_embedding = self.features(features)
         embedding = nn.functional.normalize(self.fusion(torch.cat([keyboard_embedding, mouse_embedding, feature_embedding], dim=-1)))
         return embedding, self.classifier(embedding)
@@ -58,6 +82,15 @@ def session_sequences(session: dict[str, Any], key_length: int = 256, mouse_leng
     for index, point in enumerate(points[:mouse_length]):
         previous = points[index - 1] if index else point
         dt = max(point.get("ts", 0) - previous.get("ts", 0), 1)
-        dx, dy = point.get("dx", 0), point.get("dy", 0)
+        dx = point.get("dx")
+        dy = point.get("dy")
+        if dx is None:
+            dx = point.get("x", point.get("cursor_x", 0)) - previous.get(
+                "x", previous.get("cursor_x", 0)
+            )
+        if dy is None:
+            dy = point.get("y", point.get("cursor_y", 0)) - previous.get(
+                "y", previous.get("cursor_y", 0)
+            )
         mouse[index] = [dx / 100, dy / 100, dt / 100, np.hypot(dx, dy) / dt, point.get("pressure", 0), 1]
     return keyboard, mouse

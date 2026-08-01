@@ -70,6 +70,12 @@ export interface CandidateResult {
   personal_neural_threshold: number | null;
   personal_neural_match: boolean | null;
   enrollment_count: number;
+  behavioral_drift?: {
+    status: "available" | "insufficient_baseline";
+    level: "stable" | "watch" | "high" | "unknown";
+    score: number | null;
+    outlier_feature_rate: number | null;
+  };
 }
 
 export interface VerificationResult {
@@ -79,6 +85,10 @@ export interface VerificationResult {
   candidates: CandidateResult[];
   threshold: number;
   margin: number;
+  calibration?: {
+    method: string;
+    target_far: number | null;
+  };
   // Phase 2: 1:1 self-verification no longer creates a review-queue entry
   // (login already answers "who is this"), so these fields no longer exist
   // on the response. `auto_enrolled` reports whether this confident
@@ -142,7 +152,31 @@ export interface AdminAnalytics {
   profiles: Profile[];
   similarity_labels: string[];
   similarity_matrix: (number | null)[][];
-  model: { version: string; session_count: number; profile_count: number; svm_trained: boolean; neural_ready: boolean; strategy: string };
+  model: {
+    version: string;
+    session_count: number;
+    profile_count: number;
+    svm_trained: boolean;
+    neural_ready: boolean;
+    neural_status: string;
+    neural_profiles: number;
+    neural_eligible_profiles: number;
+    feature_count: number;
+    dropped_feature_count: number;
+    calibration: {
+      method: string;
+      global_threshold: number;
+      target_far: number | null;
+      observed_far: number | null;
+      observed_frr: number | null;
+      balanced_accuracy: number | null;
+      genuine_trials: number;
+      impostor_trials: number;
+      unknown_trials: number;
+      calibrated_profiles: number;
+    };
+    strategy: string;
+  };
   experiment: null | {
     validity: string;
     warning: string;
