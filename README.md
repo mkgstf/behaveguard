@@ -17,7 +17,7 @@ BehaveGuard is an integrated behavioral-authentication application with:
 docker compose up -d
 ```
 
-This starts Postgres 16 (with `pgvector` pre-installed) on `localhost:5432` and Redis on `localhost:6379`, matching the defaults in `behaveguard.config` (`DATABASE_URL`, `REDIS_URL`). Override either with an environment variable to point at a different instance (e.g. a staging RDS/Cloud SQL database).
+This starts Postgres 16 (with `pgvector` pre-installed) on `localhost:5432` and Redis on `localhost:6379`, matching the defaults in `behaveguard.config` (`DATABASE_URL`, `REDIS_URL`). Override either with an environment variable to point at a different instance (e.g. a staging RDS/Supabase database).
 
 Apply the schema:
 
