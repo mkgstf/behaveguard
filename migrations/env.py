@@ -21,7 +21,14 @@ config = context.config
 # Always use the application's DATABASE_URL (env-var driven) rather than a
 # hardcoded value baked into alembic.ini, so `alembic upgrade head` targets
 # whatever DATABASE_URL is set to (local docker-compose, staging, prod, ...).
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+db_url = str(DATABASE_URL)
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+elif db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+
+# Escape '%' if passwords or parameters contain percent-encoded characters
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
