@@ -6,12 +6,12 @@ WORKDIR /app
 
 # Cache dependency layer without dev packages
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project --link-mode=copy
 
 # Install project package into the venv and clean leftover caches
 COPY src ./src
 COPY README.md ./
-RUN uv sync --locked --no-dev \
+RUN uv sync --locked --no-dev --link-mode=copy \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + \
     && find /app/.venv -type d -name "tests" -exec rm -rf {} +
 
