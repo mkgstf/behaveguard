@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
+from .db.engine import engine
 
 from . import oauth_google
 from .auth import (
@@ -125,6 +127,28 @@ def health() -> dict:
     except Exception:
         redis_ok = False
     return {"status": "ok", "model": model_status(), "redis": redis_ok}
+
+@app.get("/api/v1/supabase-ping")
+def supabase_keep_alive() -> dict:
+    """Executes a lightweight query to Supabase to reset the inactivity timer."""
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(text("SELECT 1")).scalar()
+
+        if result != 1:
+            raise ValueError(f"Unexpected query result: {result}")
+
+        return {
+            "status": "ok",
+            "target": "supabase",
+            "result": result,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "target": "supabase",
+            "error": str(exc),
+        }
 
 
 def _issue_token_pair(user: dict[str, Any]) -> dict[str, Any]:
